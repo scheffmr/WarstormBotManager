@@ -271,7 +271,14 @@ end
 function PlayerbotManager_OnLevelUp()
     if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
     if GetNumPartyMembers() == 0 then return end
-    SendChatMessage(".warstormbot bot init=epic", "SAY")
+    -- Init must be per-bot, with the bot's name appended (matches the working
+    -- macro: `.warstormbot bot init=epic<Name>` in SAY). A bare init=epic is a no-op.
+    for i = 1, GetNumPartyMembers() do
+        local n = UnitName("party" .. i)
+        if n then
+            SendChatMessage(".warstormbot bot init=epic" .. n, "SAY")
+        end
+    end
     local last = PlayerbotManagerDB.lastApplied
     PlayerbotManager_After(3, function()
         if last and last.members then
