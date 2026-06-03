@@ -53,8 +53,29 @@ local footer = {
     { label = "CC",      command = "rti cc moon" },
 }
 
+-- Talent spec command tokens per class (Warstorm-specific). The whisper sent to
+-- a bot is "talents spec " .. token. The token is also shown in the Presets UI.
+-- DK tokens are PLACEHOLDERS (could not be queried yet) -- verify in game.
+local specs = {
+    Warrior = { "arms pve", "fury pve", "prot pve", "arms pvp", "fury pvp", "prot pvp" },
+    Paladin = { "holy pve", "prot pve", "ret pve", "holy pvp", "prot pvp", "ret pvp" },
+    Hunter  = { "bm pve", "mm pve", "surv pve", "bm pvp", "mm pvp", "surv pvp" },
+    Rogue   = { "as pve", "combat pve", "subtlety pve", "as pvp", "combat pvp", "subtlety pvp" },
+    Priest  = { "disc pve", "holy pve", "shadow pve", "disc pvp", "holy pvp", "shadow pvp" },
+    Shaman  = { "ele pve", "enh pve", "resto pve", "ele pvp", "enh pvp", "resto pvp" },
+    Mage    = { "arcane pve", "fire pve", "frost pve", "frostfire pve", "arcane pvp", "fire pvp", "frost pvp" },
+    Warlock = { "affli pve", "demo pve", "destro pve", "affli pvp", "demo pvp", "destro pvp" },
+    Druid   = { "balance pve", "bear pve", "resto pve", "cat pve", "balance pvp", "cat pvp", "resto pvp" },
+    -- TODO: verify DK tokens once a high-level Death Knight is available.
+    DK      = { "blood pve", "frost pve", "unholy pve", "blood pvp", "frost pvp", "unholy pvp" },
+}
+
+-- Sentinel for an empty builder slot, so a preset may hold fewer than 4 bots.
+local NONE_CLASS = "(none)"
+
 -- Widgets collected for optional ElvUI skinning
 local skinButtons = {}
+local skinEditBoxes = {}
 local tabButtons = {}
 local contentFrames = {}
 local closeButton
@@ -108,6 +129,112 @@ end
 function PlayerbotManager_SetCommand(command)
     -- Send command to party chat without /p prefix
     SendChatMessage(command, "PARTY")
+end
+
+------------------------------------------------------------------------
+-- Lightweight scheduler (3.3.5a has no guaranteed C_Timer, so we run our
+-- own OnUpdate queue). Used to space out the preset-apply chat commands.
+------------------------------------------------------------------------
+
+local pending = {}   -- list of { at = <GetTime target>, fn = <callback> }
+local scheduler = CreateFrame("Frame")
+scheduler:SetScript("OnUpdate", function()
+    if #pending == 0 then return end
+    local now = GetTime()
+    local i = 1
+    while i <= #pending do
+        if now >= pending[i].at then
+            local item = table.remove(pending, i)
+            item.fn()
+        else
+            i = i + 1
+        end
+    end
+end)
+
+-- Run fn after `delay` seconds.
+function PlayerbotManager_After(delay, fn)
+    table.insert(pending, { at = GetTime() + delay, fn = fn })
+end
+
+------------------------------------------------------------------------
+-- Team composition presets
+------------------------------------------------------------------------
+
+-- Names of the bots currently in the party (the player is not in party1-4).
+local function PartyBotNames()
+    local names = {}
+    for i = 1, GetNumPartyMembers() do
+        local n = UnitName("party" .. i)
+        if n then names[n] = true end
+    end
+    return names
+end
+
+local applying = false
+
+-- Apply a preset: remove existing bots, then for each member add the class and
+-- whisper its spec to the newly-joined bot, finally send `autogear` to PARTY.
+-- Steps are spaced out via PlayerbotManager_After to allow bots to spawn/join.
+function PlayerbotManager_ApplyPreset(preset)
+    if not preset then return end
+    if applying then
+        print("PlayerbotManager: a preset is already being applied, please wait.")
+        return
+    end
+
+    -- Collect the non-empty slots.
+    local members = {}
+    for _, m in ipairs(preset.members or {}) do
+        if m.class and m.class ~= NONE_CLASS then
+            table.insert(members, m)
+        end
+    end
+    if #members == 0 then
+        print("PlayerbotManager: preset '" .. tostring(preset.name) .. "' has no bots.")
+        return
+    end
+
+    applying = true
+    print("PlayerbotManager: applying preset '" .. preset.name .. "' (" .. #members .. " bots)...")
+
+    -- 1) Start from a clean group.
+    SendChatMessage(".warstormbot bot remove *", "SAY")
+    LeaveParty()
+
+    local STEP = 3          -- seconds between actions (spawn/join latency)
+    local t = 2             -- initial wait after remove/leave
+
+    for _, m in ipairs(members) do
+        local class, spec = m.class, m.spec
+        PlayerbotManager_After(t, function()
+            local before = PartyBotNames()
+            print(string.format("  adding %s (%s)...", class, spec or "no spec"))
+            PlayerbotManager_AddBot(class)
+            -- After it joins, find the new party member and set its spec.
+            PlayerbotManager_After(STEP, function()
+                if not spec then return end
+                local target
+                for i = 1, GetNumPartyMembers() do
+                    local n = UnitName("party" .. i)
+                    if n and not before[n] then target = n break end
+                end
+                if target then
+                    SendChatMessage("talents spec " .. spec, "WHISPER", nil, target)
+                else
+                    print("  (could not find new bot to set spec '" .. spec .. "')")
+                end
+            end)
+        end)
+        t = t + STEP * 2    -- room for add + spec before the next bot
+    end
+
+    -- 2) Gear everything; the mod picks tactics from the spec (replaces `co`).
+    PlayerbotManager_After(t + 1, function()
+        SendChatMessage("autogear", "PARTY")
+        print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
+        applying = false
+    end)
 end
 
 ------------------------------------------------------------------------
@@ -298,11 +425,212 @@ local function BuildControlsTab(content)
     end
 end
 
+------------------------------------------------------------------------
+-- Presets tab (builder + saved-preset browser)
+------------------------------------------------------------------------
+
+-- Builder state: 4 rows, classIndex 0 = empty slot, else index into `classes`.
+local builderRows = {}      -- builderRows[i] = { classIndex, specIndex, classFS, specFS }
+local presetIndex = 1       -- selected saved preset
+local presetSelFS           -- FontString showing the selected preset's name
+local presetNameEdit        -- name EditBox
+
+local function RowClassName(row)
+    if row.classIndex == 0 then return NONE_CLASS end
+    return classes[row.classIndex].name
+end
+
+local function RowSpecToken(row)
+    if row.classIndex == 0 then return nil end
+    local list = specs[classes[row.classIndex].name]
+    return list and list[row.specIndex] or nil
+end
+
+local function RefreshBuilderRow(i)
+    local row = builderRows[i]
+    row.classFS:SetText(RowClassName(row))
+    row.specFS:SetText(RowSpecToken(row) or "-")
+end
+
+local function CycleRowClass(i, dir)
+    local row = builderRows[i]
+    row.classIndex = row.classIndex + dir
+    if row.classIndex < 0 then row.classIndex = #classes
+    elseif row.classIndex > #classes then row.classIndex = 0 end
+    row.specIndex = 1
+    RefreshBuilderRow(i)
+end
+
+local function CycleRowSpec(i, dir)
+    local row = builderRows[i]
+    if row.classIndex == 0 then return end
+    local list = specs[classes[row.classIndex].name]
+    if not list or #list == 0 then return end
+    row.specIndex = row.specIndex + dir
+    if row.specIndex < 1 then row.specIndex = #list
+    elseif row.specIndex > #list then row.specIndex = 1 end
+    RefreshBuilderRow(i)
+end
+
+local function RefreshPresetSel()
+    if not presetSelFS then return end
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then
+        presetIndex = 1
+        presetSelFS:SetText("(no presets)")
+        return
+    end
+    if presetIndex < 1 then presetIndex = #presets end
+    if presetIndex > #presets then presetIndex = 1 end
+    presetSelFS:SetText(presets[presetIndex].name)
+end
+
+-- Refreshed from PlayerbotManager_Init once SavedVariables are loaded.
+function PlayerbotManager_RefreshPresetUI()
+    RefreshPresetSel()
+end
+
+local function SavePreset()
+    local name = presetNameEdit:GetText()
+    if not name or name == "" then
+        print("PlayerbotManager: enter a preset name first.")
+        return
+    end
+    local members = {}
+    for i = 1, 4 do
+        local row = builderRows[i]
+        if row.classIndex ~= 0 then
+            table.insert(members, { class = RowClassName(row), spec = RowSpecToken(row) })
+        end
+    end
+    if #members == 0 then
+        print("PlayerbotManager: add at least one bot to the preset.")
+        return
+    end
+    PlayerbotManagerDB.presets = PlayerbotManagerDB.presets or {}
+    local replaced = false
+    for _, p in ipairs(PlayerbotManagerDB.presets) do
+        if p.name == name then p.members = members; replaced = true; break end
+    end
+    if not replaced then
+        table.insert(PlayerbotManagerDB.presets, { name = name, members = members })
+        presetIndex = #PlayerbotManagerDB.presets
+    end
+    RefreshPresetSel()
+    print("PlayerbotManager: saved preset '" .. name .. "' (" .. #members .. " bots).")
+end
+
+local function ApplySelectedPreset()
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then
+        print("PlayerbotManager: no presets saved.")
+        return
+    end
+    PlayerbotManager_ApplyPreset(presets[presetIndex])
+end
+
+local function DeleteSelectedPreset()
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then return end
+    local removed = table.remove(presets, presetIndex)
+    print("PlayerbotManager: deleted preset '" .. removed.name .. "'.")
+    RefreshPresetSel()
+end
+
+local function BuildPresetsTab(content)
+    local title = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", content, "TOP", 0, -4)
+    title:SetText("Build Team (up to 4 bots)")
+
+    -- 4 builder rows: [<] Class [>]   [<] Spec [>]
+    for i = 1, 4 do
+        local rowY = -24 - (i - 1) * 26
+        local row = { classIndex = 0, specIndex = 1 }
+
+        local cp = CreateButton(content, "<", 18, 18)
+        cp:SetPoint("TOPLEFT", content, "TOPLEFT", 2, rowY)
+        cp:SetScript("OnClick", function() CycleRowClass(i, -1) end)
+
+        row.classFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.classFS:SetPoint("TOPLEFT", content, "TOPLEFT", 22, rowY - 3)
+        row.classFS:SetWidth(74)
+        row.classFS:SetJustifyH("CENTER")
+
+        local cn = CreateButton(content, ">", 18, 18)
+        cn:SetPoint("TOPLEFT", content, "TOPLEFT", 98, rowY)
+        cn:SetScript("OnClick", function() CycleRowClass(i, 1) end)
+
+        local sp = CreateButton(content, "<", 18, 18)
+        sp:SetPoint("TOPLEFT", content, "TOPLEFT", 124, rowY)
+        sp:SetScript("OnClick", function() CycleRowSpec(i, -1) end)
+
+        row.specFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.specFS:SetPoint("TOPLEFT", content, "TOPLEFT", 144, rowY - 3)
+        row.specFS:SetWidth(96)
+        row.specFS:SetJustifyH("CENTER")
+
+        local sn = CreateButton(content, ">", 18, 18)
+        sn:SetPoint("TOPLEFT", content, "TOPLEFT", 242, rowY)
+        sn:SetScript("OnClick", function() CycleRowSpec(i, 1) end)
+
+        builderRows[i] = row
+        RefreshBuilderRow(i)
+    end
+
+    -- Name + Save
+    local nameLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -136)
+    nameLabel:SetText("Name:")
+
+    presetNameEdit = CreateFrame("EditBox", "PlayerbotManagerPresetNameEdit", content, "InputBoxTemplate")
+    presetNameEdit:SetPoint("TOPLEFT", content, "TOPLEFT", 44, -132)
+    presetNameEdit:SetWidth(146)
+    presetNameEdit:SetHeight(18)
+    presetNameEdit:SetAutoFocus(false)
+    presetNameEdit:SetMaxLetters(24)
+    presetNameEdit:SetFontObject(ChatFontNormal)
+    presetNameEdit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    presetNameEdit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    table.insert(skinEditBoxes, presetNameEdit)
+
+    local save = CreateButton(content, "Save", 56, 20)
+    save:SetPoint("TOPLEFT", content, "TOPLEFT", 196, -135)
+    save:SetScript("OnClick", SavePreset)
+
+    -- Saved presets: [<] Name [>]  Apply  Delete
+    local savedLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    savedLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -166)
+    savedLabel:SetText("Saved preset:")
+
+    local pp = CreateButton(content, "<", 18, 18)
+    pp:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -182)
+    pp:SetScript("OnClick", function() presetIndex = presetIndex - 1; RefreshPresetSel() end)
+
+    presetSelFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    presetSelFS:SetPoint("TOPLEFT", content, "TOPLEFT", 24, -185)
+    presetSelFS:SetWidth(150)
+    presetSelFS:SetJustifyH("CENTER")
+
+    local pn = CreateButton(content, ">", 18, 18)
+    pn:SetPoint("TOPLEFT", content, "TOPLEFT", 176, -182)
+    pn:SetScript("OnClick", function() presetIndex = presetIndex + 1; RefreshPresetSel() end)
+
+    local apply = CreateButton(content, "Apply", 80, 24)
+    apply:SetPoint("TOPLEFT", content, "TOPLEFT", 24, -212)
+    apply:SetScript("OnClick", ApplySelectedPreset)
+
+    local del = CreateButton(content, "Delete", 70, 24)
+    del:SetPoint("TOPLEFT", content, "TOPLEFT", 116, -212)
+    del:SetScript("OnClick", DeleteSelectedPreset)
+
+    RefreshPresetSel()
+end
+
 local function BuildUI()
     -- Main window
     local f = CreateFrame("Frame", "PlayerbotManagerFrame", UIParent)
-    f:SetWidth(290)
-    f:SetHeight(280)
+    f:SetWidth(300)
+    f:SetHeight(335)
     f:SetPoint("TOP", UIParent, "TOP", 0, -120)
     f:SetToplevel(true)
     f:EnableMouse(true)
@@ -327,12 +655,12 @@ local function BuildUI()
     closeButton:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
     closeButton:SetScript("OnClick", function() f:Hide() end)
 
-    -- Tabs
-    local tabLabels = { "Bots", "Formation", "Controls" }
-    local tabW = 86
+    -- Tabs (4 across; labels shortened to fit)
+    local tabLabels = { "Bots", "Form", "Ctrl", "Presets" }
+    local tabW = 68
     for i, name in ipairs(tabLabels) do
         local tab = CreateButton(f, name, tabW, 22)
-        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 12 + (i - 1) * (tabW + 2), -40)
+        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 11 + (i - 1) * (tabW + 1), -40)
         tab:SetScript("OnClick", function() PlayerbotManager_ShowTab(i) end)
         tabButtons[i] = tab
 
@@ -346,6 +674,7 @@ local function BuildUI()
     BuildBotsTab(contentFrames[1])
     BuildFormationTab(contentFrames[2])
     BuildControlsTab(contentFrames[3])
+    BuildPresetsTab(contentFrames[4])
 
     -- Event handling: init + skin once everything (incl. ElvUI) has loaded
     f:RegisterEvent("PLAYER_LOGIN")
@@ -457,6 +786,9 @@ function PlayerbotManager_Init()
     PlayerbotManagerDB.buttonPos = nil   -- drop the old, broken x/y format
     PlayerbotManager_PositionButton()
 
+    -- Populate the saved-preset selector now that SavedVariables are loaded
+    PlayerbotManager_RefreshPresetUI()
+
     -- Open on the last-used tab
     PlayerbotManager_ShowTab(PlayerbotManagerDB.selectedTab or 1)
 end
@@ -475,6 +807,11 @@ function PlayerbotManager_SkinElvUI()
         if f.CreateBackdrop then f:CreateBackdrop("Transparent") end
         for _, b in ipairs(skinButtons) do
             S:HandleButton(b)
+        end
+        if S.HandleEditBox then
+            for _, e in ipairs(skinEditBoxes) do
+                S:HandleEditBox(e)
+            end
         end
         if closeButton then
             S:HandleCloseButton(closeButton, f.backdrop)

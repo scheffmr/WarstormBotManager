@@ -18,9 +18,21 @@ Two cooperating files plus key bindings:
 
 ### UI is built in Lua, not XML
 
-`BuildUI()` (called at file load) creates `PlayerbotManagerFrame` as a **tabbed window** (~290×280): three tab buttons (`Bots` / `Formation` / `Controls`), each with its own content `Frame` in `contentFrames[i]`. `PlayerbotManager_ShowTab(i)` shows one content frame and `Disable()`s its tab as the active indicator. The **Controls** tab is a generated **role × action grid** — nested loop over `roles` (rows: all/tank/heal/dps/melee/ranged) and `actions` (cols: attack/stay/follow/flee) — plus a `footer` row (Summon/Release/Drink/Skull/CC). The minimap button is built by `BuildMinimapButton()`. Every button is created via the local `CreateButton` helper, which appends it to `skinButtons` for skinning.
+`BuildUI()` (called at file load) creates `PlayerbotManagerFrame` as a **tabbed window** (~300×335): four tab buttons (`Bots` / `Form` / `Ctrl` / `Presets`), each with its own content `Frame` in `contentFrames[i]`. `PlayerbotManager_ShowTab(i)` shows one content frame and `Disable()`s its tab as the active indicator (it iterates `#contentFrames`, so adding a tab needs no change there — but the tab row width is hand-tuned: `tabW`/offsets in `BuildUI` only fit 4 tabs). The **Ctrl** tab is a generated **role × action grid** — nested loop over `roles` (rows: all/tank/heal/dps/melee/ranged) and `actions` (cols: attack/stay/follow/flee) — plus a `footer` row (Summon/Release/Drink/Skull/CC). The minimap button is built by `BuildMinimapButton()`. Every button is created via the local `CreateButton` helper, which appends it to `skinButtons` for skinning; EditBoxes go in `skinEditBoxes`.
 
 The grid command for a cell is `role.prefix .. action` (e.g. `@tank attack`; the `all` row uses an empty prefix → bare `attack`). To add a role or action, edit the `roles`/`actions` tables — do not hand-place buttons.
+
+### Presets tab (team compositions)
+
+`BuildPresetsTab` builds a **team-composition builder**: 4 rows of `[< Class >] [< Spec >]` cyclers (class includes a `NONE_CLASS` "(none)" sentinel so a preset can hold fewer than 4 bots), a name `EditBox` + **Save**, and a saved-preset cycler with **Apply**/**Delete**. Saved presets persist in `PlayerbotManagerDB.presets` = array of `{ name, members = { {class, spec}, ... } }`.
+
+`PlayerbotManager_ApplyPreset(preset)`: removes existing bots (`.warstormbot bot remove *` SAY + `LeaveParty()`), then **sequentially** for each member adds the class (`PlayerbotManager_AddBot` → SAY `addclass`), waits for the bot to join, finds it by **diffing the party roster** (`GetNumPartyMembers`/`UnitName("party"..i)`, so duplicate classes each get the right spec), and whispers `talents spec <token>` to that bot. Finally it sends **`autogear` to PARTY** (the mod derives tactics from the spec — this replaces the old per-bot `co` whispers). A module `applying` flag blocks overlapping applies.
+
+The per-class talent-spec tokens live in the `specs` table (e.g. `specs.Paladin = { "prot pve", ... }`). These are **Warstorm-specific**; the whisper sent is `"talents spec " .. token`. **DK tokens are placeholders** (`-- TODO: verify`) until a high-level DK can query them in game.
+
+### Scheduling (no C_Timer on 3.3.5a)
+
+`PlayerbotManager_After(delay, fn)` is a self-contained scheduler: a single hidden frame with an `OnUpdate` that fires queued callbacks when their `GetTime()` target elapses. The preset apply uses it to space out chat commands (bots need time to spawn/join). **Do not** reach for `C_Timer` — it is not guaranteed on this client.
 
 ### ElvUI skinning
 
@@ -33,13 +45,15 @@ Commands split across two chat channels by purpose:
 - **Server admin/management → `SAY`**, prefixed `.warstormbot bot ...`
   - e.g. `.warstormbot bot addclass <class>`, `.warstormbot bot remove *`, `.warstormbot bot init=epic`
 - **Bot behavior orders → `PARTY`**, sent raw (no prefix)
-  - `PlayerbotManager_SetCommand(cmd)` sends `cmd` verbatim to PARTY; `PlayerbotManager_SetFormation` sends `formation <name>`.
+  - `PlayerbotManager_SetCommand(cmd)` sends `cmd` verbatim to PARTY; `PlayerbotManager_SetFormation` sends `formation <name>`; `autogear` is a PARTY command.
+- **Per-bot configuration → `WHISPER`** to a specific bot by name
+  - `talents spec <token>` is whispered to one bot (`SendChatMessage(msg, "WHISPER", nil, botName)`), since spec is per-bot. The Presets apply uses this.
 
 Behavior commands frequently use role prefixes the server understands: `@tank`, `@heal`, `@dps`, `@melee`, `@ranged` (e.g. `@tank attack`, `@heal follow`). When adding a button, pick the channel that matches the command's nature.
 
 ### State
 
-All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonAngle` (degrees around the minimap ring), `selectedTab`, plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield), re-places the button via `PlayerbotManager_PositionButton` (after ElvUI has sized the minimap), and opens the last-used tab. The minimap button uses the standard LibDBIcon-style angle math (`Minimap:GetCenter()` + cursor angle, size/scale independent) — not a fixed-offset formula — so it tracks the real minimap center under ElvUI.
+All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonAngle` (degrees around the minimap ring), `selectedTab`, `presets` (saved team compositions), plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield), re-places the button via `PlayerbotManager_PositionButton` (after ElvUI has sized the minimap), and opens the last-used tab. The minimap button uses the standard LibDBIcon-style angle math (`Minimap:GetCenter()` + cursor angle, size/scale independent) — not a fixed-offset formula — so it tracks the real minimap center under ElvUI.
 
 ## Naming caveat
 
