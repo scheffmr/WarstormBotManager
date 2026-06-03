@@ -206,6 +206,7 @@ local function WhisperSpecs(queue)
 end
 
 local applying = false
+local reinitPending = false   -- a re-init was requested during combat; run it on regen
 
 -- Apply a preset: remove existing bots, bulk-add all the preset's bots, then in
 -- one party scan whisper each class's chosen specs to that class's bots, set the
@@ -290,6 +291,14 @@ function PlayerbotManager_ReinitBots()
         print("PlayerbotManager: no bots in the party to re-init.")
         return
     end
+    -- init=epic is rejected in combat (and you're usually in combat on level up),
+    -- so defer until combat ends (PLAYER_REGEN_ENABLED runs the pending re-init).
+    if UnitAffectingCombat("player") then
+        reinitPending = true
+        print("PlayerbotManager: in combat -- bots will re-init when combat ends.")
+        return
+    end
+    reinitPending = false
     for i = 1, GetNumPartyMembers() do
         local n = UnitName("party" .. i)
         if n then
@@ -774,13 +783,20 @@ local function BuildUI()
     BuildControlsTab(contentFrames[3])
     BuildPresetsTab(contentFrames[4])
 
-    -- Event handling: init + skin on login; re-init bots on level up.
+    -- Event handling: init + skin on login; re-init bots on level up; run a
+    -- combat-deferred re-init when combat ends.
     f:RegisterEvent("PLAYER_LOGIN")
     f:RegisterEvent("PLAYER_LEVEL_UP")
+    f:RegisterEvent("PLAYER_REGEN_ENABLED")
     f:SetScript("OnEvent", function(self, event)
         if event == "PLAYER_LEVEL_UP" then
             PlayerbotManager_OnLevelUp()
-        else
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            if reinitPending then
+                reinitPending = false
+                PlayerbotManager_ReinitBots()
+            end
+        else  -- PLAYER_LOGIN
             PlayerbotManager_Init()
             PlayerbotManager_SkinElvUI()
         end
