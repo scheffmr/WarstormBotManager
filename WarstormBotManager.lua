@@ -250,19 +250,32 @@ function PlayerbotManager_ApplyPreset(preset)
         end
     end)
 
-    -- 3) Once they've joined, assign specs by class, set loot, then gear.
+    -- 3) Once they've joined, assign specs by class, then gear.
     PlayerbotManager_After(4, function()
         WhisperSpecs(BuildSpecQueue(members))
         PlayerbotManager_After(1, function()
-            -- Set the group to Free For All loot with an Epic threshold (4).
-            if GetNumPartyMembers() > 0 and IsPartyLeader() then
-                SetLootMethod("freeforall")
-                SetLootThreshold(4)   -- 2=uncommon 3=rare 4=epic 5=legendary
-            end
             SendChatMessage("autogear", "PARTY")
             print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
             applying = false
         end)
+        -- 4) Loot last, on its own frame after autogear -- setting it in the same
+        --    frame as the threshold (or amid group updates) let the Free For All
+        --    method get clobbered while the threshold stuck.
+        PlayerbotManager_After(2, function()
+            PlayerbotManager_SetGroupLoot()
+        end)
+    end)
+end
+
+-- Set the group to Free For All loot with an Epic threshold (4). Method and
+-- threshold are set on separate frames so the FFA change isn't clobbered.
+function PlayerbotManager_SetGroupLoot()
+    if GetNumPartyMembers() == 0 or not IsPartyLeader() then return end
+    SetLootMethod("freeforall")
+    PlayerbotManager_After(0.5, function()
+        if IsPartyLeader() then
+            SetLootThreshold(4)   -- 2=uncommon 3=rare 4=epic 5=legendary
+        end
     end)
 end
 
@@ -935,6 +948,8 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
         PlayerbotManagerButtonFrame_OnClick()        -- toggle the panel
     elseif msg == "reinit" then
         PlayerbotManager_ReinitBots()                -- manual re-init now
+    elseif msg == "loot" then
+        PlayerbotManager_SetGroupLoot()              -- Free For All + Epic threshold
     elseif msg == "levelup" then
         PlayerbotManagerDB.autoLevelUp = not PlayerbotManagerDB.autoLevelUp
         PlayerbotManager_RefreshAutoLevelCheck()
@@ -952,6 +967,7 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
         print("PlayerbotManager commands:")
         print("  /wbm  -  toggle the bot manager panel")
         print("  /wbm reinit  -  re-init the current bots now (init=epic + re-spec + autogear)")
+        print("  /wbm loot  -  set the group to Free For All / Epic threshold")
         print("  /wbm levelup [on|off]  -  auto re-init bots on level up (currently " ..
             (PlayerbotManagerDB.autoLevelUp ~= false and "on" or "off") .. ")")
     end
