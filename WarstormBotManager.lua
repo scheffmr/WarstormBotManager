@@ -169,28 +169,11 @@ local classToken = {
     Druid = "DRUID", DK = "DEATHKNIGHT",
 }
 
-local applying = false
-
--- Apply a preset: remove existing bots, bulk-add all the preset's bots, then in
--- one party scan whisper each class's chosen specs to that class's bots, and
--- finally send `autogear` to PARTY.
---
--- Specs are grouped per class token (e.g. SHAMAN -> {resto pve, enh pve, ele pve}).
--- The scan pops one spec per matching party member, so with 3 shamans all 3
--- chosen specs get applied -- which bot gets which doesn't matter.
-function PlayerbotManager_ApplyPreset(preset)
-    if not preset then return end
-    if applying then
-        print("PlayerbotManager: a preset is already being applied, please wait.")
-        return
-    end
-
-    -- Collect the non-empty slots and group their specs by class token.
-    local members = {}
+-- Group a member list's specs by class token, e.g. SHAMAN -> {resto pve, enh pve}.
+local function BuildSpecQueue(members)
     local queue = {}        -- queue[token] = { spec, spec, ... }
-    for _, m in ipairs(preset.members or {}) do
+    for _, m in ipairs(members or {}) do
         if m.class and m.class ~= NONE_CLASS then
-            table.insert(members, m)
             local token = classToken[m.class]
             if token and m.spec then
                 queue[token] = queue[token] or {}
@@ -198,10 +181,54 @@ function PlayerbotManager_ApplyPreset(preset)
             end
         end
     end
+    return queue
+end
+
+-- Scan the party and whisper one queued spec to each matching bot (mutates the
+-- queue). With 3 shamans + {resto,enh,ele} queued, all three get set -- which
+-- bot gets which doesn't matter. Specs left over (a bot that didn't spawn) warn.
+local function WhisperSpecs(queue)
+    for i = 1, GetNumPartyMembers() do
+        local name = UnitName("party" .. i)
+        local _, token = UnitClass("party" .. i)
+        local q = token and queue[token]
+        if name and q and #q > 0 then
+            SendChatMessage("talents spec " .. table.remove(q, 1), "WHISPER", nil, name)
+        end
+    end
+    for _, left in pairs(queue) do
+        for _, leftover in ipairs(left) do
+            print("  (no bot for spec '" .. leftover .. "' -- a bot may not have spawned)")
+        end
+    end
+end
+
+local applying = false
+
+-- Apply a preset: remove existing bots, bulk-add all the preset's bots, then in
+-- one party scan whisper each class's chosen specs to that class's bots, set the
+-- group to Free For All / Epic loot, and finally send `autogear` to PARTY.
+function PlayerbotManager_ApplyPreset(preset)
+    if not preset then return end
+    if applying then
+        print("PlayerbotManager: a preset is already being applied, please wait.")
+        return
+    end
+
+    -- Collect the non-empty slots (copy, so the remembered comp is independent).
+    local members = {}
+    for _, m in ipairs(preset.members or {}) do
+        if m.class and m.class ~= NONE_CLASS then
+            table.insert(members, { class = m.class, spec = m.spec })
+        end
+    end
     if #members == 0 then
         print("PlayerbotManager: preset '" .. tostring(preset.name) .. "' has no bots.")
         return
     end
+
+    -- Remember this comp so PLAYER_LEVEL_UP can re-apply the same specs.
+    PlayerbotManagerDB.lastApplied = { name = preset.name, members = members }
 
     applying = true
     print("PlayerbotManager: applying preset '" .. preset.name .. "' (" .. #members .. " bots)...")
@@ -221,23 +248,9 @@ function PlayerbotManager_ApplyPreset(preset)
         end
     end)
 
-    -- 3) Once they've joined, scan the party and assign specs by class.
+    -- 3) Once they've joined, assign specs by class, set loot, then gear.
     PlayerbotManager_After(4, function()
-        for i = 1, GetNumPartyMembers() do
-            local name = UnitName("party" .. i)
-            local _, token = UnitClass("party" .. i)
-            local q = token and queue[token]
-            if name and q and #q > 0 then
-                SendChatMessage("talents spec " .. table.remove(q, 1), "WHISPER", nil, name)
-            end
-        end
-        -- Note any specs left unassigned (a bot didn't make it into the group).
-        for _, specs_left in pairs(queue) do
-            for _, leftover in ipairs(specs_left) do
-                print("  (no bot for spec '" .. leftover .. "' -- a bot may not have spawned)")
-            end
-        end
-        -- 4) Gear everything; the mod derives tactics from the spec (replaces `co`).
+        WhisperSpecs(BuildSpecQueue(members))
         PlayerbotManager_After(1, function()
             -- Set the group to Free For All loot with an Epic threshold (4).
             if GetNumPartyMembers() > 0 and IsPartyLeader() then
@@ -247,6 +260,23 @@ function PlayerbotManager_ApplyPreset(preset)
             SendChatMessage("autogear", "PARTY")
             print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
             applying = false
+        end)
+    end)
+end
+
+-- On level up: re-initialise the bots to epic, re-apply the last comp's specs,
+-- and autogear. Only acts when bots are present.
+function PlayerbotManager_OnLevelUp()
+    if GetNumPartyMembers() == 0 then return end
+    SendChatMessage(".warstormbot bot init=epic", "SAY")
+    local last = PlayerbotManagerDB.lastApplied
+    PlayerbotManager_After(3, function()
+        if last and last.members then
+            WhisperSpecs(BuildSpecQueue(last.members))
+        end
+        PlayerbotManager_After(1, function()
+            SendChatMessage("autogear", "PARTY")
+            print("PlayerbotManager: bots re-initialised after level up.")
         end)
     end)
 end
@@ -690,11 +720,16 @@ local function BuildUI()
     BuildControlsTab(contentFrames[3])
     BuildPresetsTab(contentFrames[4])
 
-    -- Event handling: init + skin once everything (incl. ElvUI) has loaded
+    -- Event handling: init + skin on login; re-init bots on level up.
     f:RegisterEvent("PLAYER_LOGIN")
-    f:SetScript("OnEvent", function()
-        PlayerbotManager_Init()
-        PlayerbotManager_SkinElvUI()
+    f:RegisterEvent("PLAYER_LEVEL_UP")
+    f:SetScript("OnEvent", function(self, event)
+        if event == "PLAYER_LEVEL_UP" then
+            PlayerbotManager_OnLevelUp()
+        else
+            PlayerbotManager_Init()
+            PlayerbotManager_SkinElvUI()
+        end
     end)
 end
 
