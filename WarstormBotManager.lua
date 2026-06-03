@@ -239,6 +239,11 @@ function PlayerbotManager_ApplyPreset(preset)
         end
         -- 4) Gear everything; the mod derives tactics from the spec (replaces `co`).
         PlayerbotManager_After(1, function()
+            -- Set the group to Free For All loot with an Epic threshold (4).
+            if GetNumPartyMembers() > 0 and IsPartyLeader() then
+                SetLootMethod("freeforall")
+                SetLootThreshold(4)   -- 2=uncommon 3=rare 4=epic 5=legendary
+            end
             SendChatMessage("autogear", "PARTY")
             print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
             applying = false
