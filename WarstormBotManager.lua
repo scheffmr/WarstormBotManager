@@ -76,9 +76,11 @@ local NONE_CLASS = "(none)"
 -- Widgets collected for optional ElvUI skinning
 local skinButtons = {}
 local skinEditBoxes = {}
+local skinChecks = {}
 local tabButtons = {}
 local contentFrames = {}
 local closeButton
+local autoLevelCheck   -- the "Re-init on level up" checkbox on the Bots tab
 
 -- Return the index of the entry whose .name matches, or nil if absent
 local function IndexByName(list, name)
@@ -386,6 +388,28 @@ local function BuildBotsTab(content)
     respec:SetScript("OnClick", function()
         SendChatMessage(".warstormbot bot init=epic", "SAY")
     end)
+
+    -- Toggle: re-init bots (init=epic + re-spec + autogear) automatically on level up.
+    autoLevelCheck = CreateFrame("CheckButton", "PlayerbotManagerAutoLevelCheck", content, "UICheckButtonTemplate")
+    autoLevelCheck:SetWidth(24)
+    autoLevelCheck:SetHeight(24)
+    autoLevelCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 28, -140)
+    local chkLabel = _G["PlayerbotManagerAutoLevelCheckText"]
+    if chkLabel then
+        chkLabel:SetFontObject(GameFontNormalSmall)
+        chkLabel:SetText("Re-init bots on level up")
+    end
+    autoLevelCheck:SetScript("OnClick", function(self)
+        PlayerbotManagerDB.autoLevelUp = self:GetChecked() and true or false
+    end)
+    table.insert(skinChecks, autoLevelCheck)
+end
+
+-- Sync the Bots-tab checkbox with the stored setting (default on).
+function PlayerbotManager_RefreshAutoLevelCheck()
+    if autoLevelCheck then
+        autoLevelCheck:SetChecked(PlayerbotManagerDB.autoLevelUp ~= false)
+    end
 end
 
 local function BuildFormationTab(content)
@@ -840,6 +864,7 @@ function PlayerbotManager_Init()
     if PlayerbotManagerDB.autoLevelUp == nil then
         PlayerbotManagerDB.autoLevelUp = true
     end
+    PlayerbotManager_RefreshAutoLevelCheck()
 
     -- Populate the saved-preset selector now that SavedVariables are loaded
     PlayerbotManager_RefreshPresetUI()
@@ -868,6 +893,11 @@ function PlayerbotManager_SkinElvUI()
                 S:HandleEditBox(e)
             end
         end
+        if S.HandleCheckBox then
+            for _, c in ipairs(skinChecks) do
+                S:HandleCheckBox(c)
+            end
+        end
         if closeButton then
             S:HandleCloseButton(closeButton, f.backdrop)
         end
@@ -889,13 +919,16 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
         PlayerbotManagerButtonFrame_OnClick()        -- toggle the panel
     elseif msg == "levelup" then
         PlayerbotManagerDB.autoLevelUp = not PlayerbotManagerDB.autoLevelUp
+        PlayerbotManager_RefreshAutoLevelCheck()
         print("PlayerbotManager: auto re-init on level up " ..
             (PlayerbotManagerDB.autoLevelUp and "ENABLED" or "DISABLED") .. ".")
     elseif msg == "levelup on" then
         PlayerbotManagerDB.autoLevelUp = true
+        PlayerbotManager_RefreshAutoLevelCheck()
         print("PlayerbotManager: auto re-init on level up ENABLED.")
     elseif msg == "levelup off" then
         PlayerbotManagerDB.autoLevelUp = false
+        PlayerbotManager_RefreshAutoLevelCheck()
         print("PlayerbotManager: auto re-init on level up DISABLED.")
     else
         print("PlayerbotManager commands:")
