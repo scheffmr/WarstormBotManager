@@ -161,21 +161,23 @@ end
 -- Team composition presets
 ------------------------------------------------------------------------
 
--- Names of the bots currently in the party (the player is not in party1-4).
-local function PartyBotNames()
-    local names = {}
-    for i = 1, GetNumPartyMembers() do
-        local n = UnitName("party" .. i)
-        if n then names[n] = true end
-    end
-    return names
-end
+-- Map our class display names to the UnitClass() token (locale-independent),
+-- so specs can be matched to party members regardless of client language.
+local classToken = {
+    Warrior = "WARRIOR", Paladin = "PALADIN", Hunter = "HUNTER", Rogue = "ROGUE",
+    Priest = "PRIEST", Shaman = "SHAMAN", Mage = "MAGE", Warlock = "WARLOCK",
+    Druid = "DRUID", DK = "DEATHKNIGHT",
+}
 
 local applying = false
 
--- Apply a preset: remove existing bots, then for each member add the class and
--- whisper its spec to the newly-joined bot, finally send `autogear` to PARTY.
--- Steps are spaced out via PlayerbotManager_After to allow bots to spawn/join.
+-- Apply a preset: remove existing bots, bulk-add all the preset's bots, then in
+-- one party scan whisper each class's chosen specs to that class's bots, and
+-- finally send `autogear` to PARTY.
+--
+-- Specs are grouped per class token (e.g. SHAMAN -> {resto pve, enh pve, ele pve}).
+-- The scan pops one spec per matching party member, so with 3 shamans all 3
+-- chosen specs get applied -- which bot gets which doesn't matter.
 function PlayerbotManager_ApplyPreset(preset)
     if not preset then return end
     if applying then
@@ -183,11 +185,17 @@ function PlayerbotManager_ApplyPreset(preset)
         return
     end
 
-    -- Collect the non-empty slots.
+    -- Collect the non-empty slots and group their specs by class token.
     local members = {}
+    local queue = {}        -- queue[token] = { spec, spec, ... }
     for _, m in ipairs(preset.members or {}) do
         if m.class and m.class ~= NONE_CLASS then
             table.insert(members, m)
+            local token = classToken[m.class]
+            if token and m.spec then
+                queue[token] = queue[token] or {}
+                table.insert(queue[token], m.spec)
+            end
         end
     end
     if #members == 0 then
@@ -202,42 +210,35 @@ function PlayerbotManager_ApplyPreset(preset)
     SendChatMessage(".warstormbot bot remove *", "SAY")
     LeaveParty()
 
-    local JOIN_WAIT = 2     -- add -> spec whisper (bot spawn/join latency)
-    local SLOT = 2.5        -- spacing between successive bot adds
-    local t = 1.5           -- initial wait after remove/leave
-    local lastAdd = t
+    -- 2) Bulk-add every bot at once (after a short settle for the remove/leave).
+    PlayerbotManager_After(1, function()
+        for _, m in ipairs(members) do
+            PlayerbotManager_AddBot(m.class)
+        end
+    end)
 
-    for _, m in ipairs(members) do
-        local class, spec = m.class, m.spec
-        PlayerbotManager_After(t, function()
-            local before = PartyBotNames()
-            print(string.format("  adding %s (%s)...", class, spec or "no spec"))
-            PlayerbotManager_AddBot(class)
-            -- After it joins, find the new party member and set its spec.
-            PlayerbotManager_After(JOIN_WAIT, function()
-                if not spec then return end
-                local target
-                for i = 1, GetNumPartyMembers() do
-                    local n = UnitName("party" .. i)
-                    if n and not before[n] then target = n break end
-                end
-                if target then
-                    SendChatMessage("talents spec " .. spec, "WHISPER", nil, target)
-                else
-                    print("  (could not find new bot to set spec '" .. spec .. "')")
-                end
-            end)
+    -- 3) Once they've joined, scan the party and assign specs by class.
+    PlayerbotManager_After(4, function()
+        for i = 1, GetNumPartyMembers() do
+            local name = UnitName("party" .. i)
+            local _, token = UnitClass("party" .. i)
+            local q = token and queue[token]
+            if name and q and #q > 0 then
+                SendChatMessage("talents spec " .. table.remove(q, 1), "WHISPER", nil, name)
+            end
+        end
+        -- Note any specs left unassigned (a bot didn't make it into the group).
+        for _, specs_left in pairs(queue) do
+            for _, leftover in ipairs(specs_left) do
+                print("  (no bot for spec '" .. leftover .. "' -- a bot may not have spawned)")
+            end
+        end
+        -- 4) Gear everything; the mod derives tactics from the spec (replaces `co`).
+        PlayerbotManager_After(1, function()
+            SendChatMessage("autogear", "PARTY")
+            print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
+            applying = false
         end)
-        lastAdd = t
-        t = t + SLOT
-    end
-
-    -- 2) Gear everything (just after the last spec whisper); the mod picks
-    --    tactics from the spec, replacing the old per-bot `co` commands.
-    PlayerbotManager_After(lastAdd + JOIN_WAIT + 0.5, function()
-        SendChatMessage("autogear", "PARTY")
-        print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
-        applying = false
     end)
 end
 
