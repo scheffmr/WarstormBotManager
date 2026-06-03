@@ -202,8 +202,10 @@ function PlayerbotManager_ApplyPreset(preset)
     SendChatMessage(".warstormbot bot remove *", "SAY")
     LeaveParty()
 
-    local STEP = 3          -- seconds between actions (spawn/join latency)
-    local t = 2             -- initial wait after remove/leave
+    local JOIN_WAIT = 2     -- add -> spec whisper (bot spawn/join latency)
+    local SLOT = 2.5        -- spacing between successive bot adds
+    local t = 1.5           -- initial wait after remove/leave
+    local lastAdd = t
 
     for _, m in ipairs(members) do
         local class, spec = m.class, m.spec
@@ -212,7 +214,7 @@ function PlayerbotManager_ApplyPreset(preset)
             print(string.format("  adding %s (%s)...", class, spec or "no spec"))
             PlayerbotManager_AddBot(class)
             -- After it joins, find the new party member and set its spec.
-            PlayerbotManager_After(STEP, function()
+            PlayerbotManager_After(JOIN_WAIT, function()
                 if not spec then return end
                 local target
                 for i = 1, GetNumPartyMembers() do
@@ -226,11 +228,13 @@ function PlayerbotManager_ApplyPreset(preset)
                 end
             end)
         end)
-        t = t + STEP * 2    -- room for add + spec before the next bot
+        lastAdd = t
+        t = t + SLOT
     end
 
-    -- 2) Gear everything; the mod picks tactics from the spec (replaces `co`).
-    PlayerbotManager_After(t + 1, function()
+    -- 2) Gear everything (just after the last spec whisper); the mod picks
+    --    tactics from the spec, replacing the old per-bot `co` commands.
+    PlayerbotManager_After(lastAdd + JOIN_WAIT + 0.5, function()
         SendChatMessage("autogear", "PARTY")
         print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
         applying = false
