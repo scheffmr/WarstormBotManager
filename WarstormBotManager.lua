@@ -268,10 +268,10 @@ end
 
 -- On level up: re-initialise the bots to epic, re-apply the last comp's specs,
 -- and autogear. Only acts when bots are present.
--- Re-init the current bots: per-bot `init=epic<Name>` to SAY (matches the working
--- macro -- the bot name is appended directly; a bare init=epic is a no-op), then
--- re-apply the last comp's specs and autogear. Shared by the level-up handler,
--- the ReSpec button, and the `/wbm reinit` command.
+-- Re-init the current bots: per-bot `init=epic <Name>` to SAY (the server splits
+-- args on spaces, so the bot name must be a separate token -- a glued-on name
+-- yields "usage: add/remove PLAYERNAME"), then re-apply the last comp's specs and
+-- autogear. Shared by the level-up handler, the ReSpec button, and `/wbm reinit`.
 function PlayerbotManager_ReinitBots()
     if GetNumPartyMembers() == 0 then
         print("PlayerbotManager: no bots in the party to re-init.")
@@ -280,7 +280,7 @@ function PlayerbotManager_ReinitBots()
     for i = 1, GetNumPartyMembers() do
         local n = UnitName("party" .. i)
         if n then
-            SendChatMessage(".warstormbot bot init=epic" .. n, "SAY")
+            SendChatMessage(".warstormbot bot init=epic " .. n, "SAY")
         end
     end
     local last = PlayerbotManagerDB.lastApplied
