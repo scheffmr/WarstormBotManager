@@ -267,6 +267,7 @@ end
 -- On level up: re-initialise the bots to epic, re-apply the last comp's specs,
 -- and autogear. Only acts when bots are present.
 function PlayerbotManager_OnLevelUp()
+    if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
     if GetNumPartyMembers() == 0 then return end
     SendChatMessage(".warstormbot bot init=epic", "SAY")
     local last = PlayerbotManagerDB.lastApplied
@@ -835,6 +836,11 @@ function PlayerbotManager_Init()
     PlayerbotManagerDB.buttonPos = nil   -- drop the old, broken x/y format
     PlayerbotManager_PositionButton()
 
+    -- Auto re-init bots on level up: default ON (post to party when grouped)
+    if PlayerbotManagerDB.autoLevelUp == nil then
+        PlayerbotManagerDB.autoLevelUp = true
+    end
+
     -- Populate the saved-preset selector now that SavedVariables are loaded
     PlayerbotManager_RefreshPresetUI()
 
@@ -866,6 +872,37 @@ function PlayerbotManager_SkinElvUI()
             S:HandleCloseButton(closeButton, f.backdrop)
         end
     end)
+end
+
+------------------------------------------------------------------------
+-- Slash command (panel toggle + the level-up auto-init toggle, until the
+-- toggle gets a permanent home in the UI)
+------------------------------------------------------------------------
+
+SLASH_WARSTORMBOTMANAGER1 = "/wbm"
+SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
+    msg = string.lower(msg or "")
+    msg = string.gsub(msg, "^%s+", "")
+    msg = string.gsub(msg, "%s+$", "")
+
+    if msg == "" then
+        PlayerbotManagerButtonFrame_OnClick()        -- toggle the panel
+    elseif msg == "levelup" then
+        PlayerbotManagerDB.autoLevelUp = not PlayerbotManagerDB.autoLevelUp
+        print("PlayerbotManager: auto re-init on level up " ..
+            (PlayerbotManagerDB.autoLevelUp and "ENABLED" or "DISABLED") .. ".")
+    elseif msg == "levelup on" then
+        PlayerbotManagerDB.autoLevelUp = true
+        print("PlayerbotManager: auto re-init on level up ENABLED.")
+    elseif msg == "levelup off" then
+        PlayerbotManagerDB.autoLevelUp = false
+        print("PlayerbotManager: auto re-init on level up DISABLED.")
+    else
+        print("PlayerbotManager commands:")
+        print("  /wbm  -  toggle the bot manager panel")
+        print("  /wbm levelup [on|off]  -  auto re-init bots on level up (currently " ..
+            (PlayerbotManagerDB.autoLevelUp ~= false and "on" or "off") .. ")")
+    end
 end
 
 -- Build the UI at load time; Init/skin run on PLAYER_LOGIN.
