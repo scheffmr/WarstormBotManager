@@ -4,7 +4,7 @@
 ## Author: Moroes
 ## Version: 1.0
 ## SavedVariables: PlayerbotManagerDB
+## OptionalDeps: ElvUI
 
 Bindings.xml
-WarstormBotManager.xml
 WarstormBotManager.lua

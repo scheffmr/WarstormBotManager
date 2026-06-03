@@ -10,12 +10,21 @@ There is no build, lint, or test tooling. "Running" it means copying the folder 
 
 ## Architecture
 
-Three cooperating files plus key bindings:
+Two cooperating files plus key bindings:
 
-- **`WarstormBotManager.toc`** — manifest. Declares `Interface: 30300` and `SavedVariables: PlayerbotManagerDB`, and the load order (`bindings.xml`, `WarstormBotManager.xml`, `WarstormBotManager.lua`).
-- **`WarstormBotManager.xml`** — all UI. A draggable minimap button (`PlayerbotManagerButtonFrame`) toggles the main panel (`PlayerbotManagerFrame`, ~40 buttons). Each button's `<OnClick>` either calls a `PlayerbotManager_*` Lua function or inlines a `SendChatMessage` directly.
-- **`WarstormBotManager.lua`** — logic. Holds the `classes` and `formations` tables, the prev/next cyclers, persistence, and the command-sending helpers.
+- **`WarstormBotManager.toc`** — manifest. Declares `Interface: 30300`, `SavedVariables: PlayerbotManagerDB`, `OptionalDeps: ElvUI` (so ElvUI loads first when present), and the load order (`Bindings.xml`, `WarstormBotManager.lua`).
+- **`WarstormBotManager.lua`** — everything: the `classes`/`formations`/`roles`/`actions`/`footer` data tables, the entire UI built programmatically (no `.xml`), the cyclers, persistence, command senders, and ElvUI skinning.
 - **`Bindings.xml`** — keybindings that call the same global functions.
+
+### UI is built in Lua, not XML
+
+`BuildUI()` (called at file load) creates `PlayerbotManagerFrame` as a **tabbed window** (~290×280): three tab buttons (`Bots` / `Formation` / `Controls`), each with its own content `Frame` in `contentFrames[i]`. `PlayerbotManager_ShowTab(i)` shows one content frame and `Disable()`s its tab as the active indicator. The **Controls** tab is a generated **role × action grid** — nested loop over `roles` (rows: all/tank/heal/dps/melee/ranged) and `actions` (cols: attack/stay/follow/flee) — plus a `footer` row (Summon/Release/Drink/Skull/CC). The minimap button is built by `BuildMinimapButton()`. Every button is created via the local `CreateButton` helper, which appends it to `skinButtons` for skinning.
+
+The grid command for a cell is `role.prefix .. action` (e.g. `@tank attack`; the `all` row uses an empty prefix → bare `attack`). To add a role or action, edit the `roles`/`actions` tables — do not hand-place buttons.
+
+### ElvUI skinning
+
+`PlayerbotManager_SkinElvUI()` runs on `PLAYER_LOGIN` (after ElvUI has loaded). If `ElvUI` is absent it no-ops and the default Blizzard `DialogBox` backdrop set in `BuildUI` remains. When present it grabs `local E = unpack(ElvUI); local S = E:GetModule("Skins", true)` and, inside a `pcall`, strips the backdrop, calls `f:CreateBackdrop("Transparent")`, `S:HandleButton` on every `skinButtons` entry, and `S:HandleCloseButton`. The whole block is `pcall`-guarded so an ElvUI API change can never break the panel.
 
 ### The command channel convention (most important thing to know)
 
@@ -30,20 +39,20 @@ Behavior commands frequently use role prefixes the server understands: `@tank`, 
 
 ### State
 
-All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonPos`, plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield) and refreshes the on-panel FontStrings.
+All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonPos`, `selectedTab`, plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield), restores the button position, and opens the last-used tab.
 
 ## Naming caveat
 
-Files and the TOC say "Warstorm", but every frame, global function, SavedVariable, and binding is named `PlayerbotManager*` / `PLAYERBOTMANAGER_*`. Keep new code consistent with the **`PlayerbotManager` prefix** for runtime identifiers — globals are looked up by those exact names from XML.
+Files and the TOC say "Warstorm", but every frame, global function, SavedVariable, and binding is named `PlayerbotManager*` / `PLAYERBOTMANAGER_*`. Keep new code consistent with the **`PlayerbotManager` prefix** for runtime identifiers. `Bindings.xml` calls `PlayerbotManagerButtonFrame_OnClick` and `PlayerbotManager_SetCommand` by name, and `PlayerbotManagerFrame` / `PlayerbotManagerButtonFrame` are referenced as globals — these names must not change.
 
 ## Conventions established while fixing earlier bugs
 
-Several latent bugs have been fixed; keep new code consistent with the resulting conventions:
+Keep new code consistent with these conventions:
 
-- **TOC filenames must match on-disk case** (`Bindings.xml`, not `bindings.xml`). The Windows loader is case-insensitive, but this addon also runs on a case-sensitive (Linux) filesystem where a mismatch silently fails to load.
-- **The Lua is loaded once, via the TOC** — do not add a `<Script>` tag for it in the XML (a stale one pointing at a nonexistent `PlayerbotManager.lua` used to risk aborting frame creation).
-- **Frame/FontString `name=` values must be globally unique.** XML names become globals; duplicates silently overwrite each other. (Resolved cases: `CmdDpsAttack` and `FormationLabel` were previously both colliding under reused names.)
+- **TOC filenames must match on-disk case** (`Bindings.xml`). The Windows loader is case-insensitive, but this addon also runs on a case-sensitive (Linux) filesystem where a mismatch silently fails to load.
+- **Build UI in Lua, not XML.** The old `WarstormBotManager.xml` was removed; add new widgets via `CreateFrame` / `CreateButton` inside the `Build*Tab` / `BuildUI` functions so they're laid out, wired, and skinned consistently. Created buttons go through `CreateButton` so they land in `skinButtons`.
 - **Derive cycler index from the saved name, not a hard-coded number.** `PlayerbotManager_Init` uses the `IndexByName` helper so `selectedClass`/`selectedFormation` and their indices can't drift if the `classes`/`formations` tables are reordered.
-- **Event registration and initial `Hide` live in the XML `OnLoad`, not in `Init`.** `Init` is the `PLAYER_LOGIN` handler — don't re-register the event there.
+- **Init runs on `PLAYER_LOGIN`** (registered in `BuildUI`'s event frame) and also triggers `PlayerbotManager_SkinElvUI` — don't re-register the event inside `Init`.
 - **Lookups over `classes`/`formations` `print` a warning on no-match** rather than silently doing nothing; preserve that feedback.
 - **Minimap button position** is saved to `PlayerbotManagerDB.buttonPos` on drag and restored in `Init` (the default `{0,0}` is treated as "untouched" and skipped).
+- **Keep ElvUI calls inside the `pcall`** in `PlayerbotManager_SkinElvUI`, and guard on `if ElvUI then` — the addon must stay fully functional with ElvUI absent or after an ElvUI API change.
