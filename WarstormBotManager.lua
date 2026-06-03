@@ -268,11 +268,15 @@ end
 
 -- On level up: re-initialise the bots to epic, re-apply the last comp's specs,
 -- and autogear. Only acts when bots are present.
-function PlayerbotManager_OnLevelUp()
-    if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
-    if GetNumPartyMembers() == 0 then return end
-    -- Init must be per-bot, with the bot's name appended (matches the working
-    -- macro: `.warstormbot bot init=epic<Name>` in SAY). A bare init=epic is a no-op.
+-- Re-init the current bots: per-bot `init=epic<Name>` to SAY (matches the working
+-- macro -- the bot name is appended directly; a bare init=epic is a no-op), then
+-- re-apply the last comp's specs and autogear. Shared by the level-up handler,
+-- the ReSpec button, and the `/wbm reinit` command.
+function PlayerbotManager_ReinitBots()
+    if GetNumPartyMembers() == 0 then
+        print("PlayerbotManager: no bots in the party to re-init.")
+        return
+    end
     for i = 1, GetNumPartyMembers() do
         local n = UnitName("party" .. i)
         if n then
@@ -286,9 +290,16 @@ function PlayerbotManager_OnLevelUp()
         end
         PlayerbotManager_After(1, function()
             SendChatMessage("autogear", "PARTY")
-            print("PlayerbotManager: bots re-initialised after level up.")
+            print("PlayerbotManager: bots re-initialised.")
         end)
     end)
+end
+
+-- Auto-trigger on level up (gated by the toggle; silent when solo).
+function PlayerbotManager_OnLevelUp()
+    if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
+    if GetNumPartyMembers() == 0 then return end
+    PlayerbotManager_ReinitBots()
 end
 
 ------------------------------------------------------------------------
@@ -392,9 +403,7 @@ local function BuildBotsTab(content)
 
     local respec = CreateButton(content, "ReSpec", 90, 26)
     respec:SetPoint("TOP", content, "TOP", 55, -100)
-    respec:SetScript("OnClick", function()
-        SendChatMessage(".warstormbot bot init=epic", "SAY")
-    end)
+    respec:SetScript("OnClick", PlayerbotManager_ReinitBots)
 
     -- Toggle: re-init bots (init=epic + re-spec + autogear) automatically on level up.
     autoLevelCheck = CreateFrame("CheckButton", "PlayerbotManagerAutoLevelCheck", content, "UICheckButtonTemplate")
@@ -924,6 +933,8 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
 
     if msg == "" then
         PlayerbotManagerButtonFrame_OnClick()        -- toggle the panel
+    elseif msg == "reinit" then
+        PlayerbotManager_ReinitBots()                -- manual re-init now
     elseif msg == "levelup" then
         PlayerbotManagerDB.autoLevelUp = not PlayerbotManagerDB.autoLevelUp
         PlayerbotManager_RefreshAutoLevelCheck()
@@ -940,6 +951,7 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
     else
         print("PlayerbotManager commands:")
         print("  /wbm  -  toggle the bot manager panel")
+        print("  /wbm reinit  -  re-init the current bots now (init=epic + re-spec + autogear)")
         print("  /wbm levelup [on|off]  -  auto re-init bots on level up (currently " ..
             (PlayerbotManagerDB.autoLevelUp ~= false and "on" or "off") .. ")")
     end
