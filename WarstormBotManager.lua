@@ -206,12 +206,16 @@ function PlayerbotManager_ApplyPreset(preset)
     applying = true
     print("PlayerbotManager: applying preset '" .. preset.name .. "' (" .. #members .. " bots)...")
 
-    -- 1) Start from a clean group.
-    SendChatMessage(".warstormbot bot remove *", "SAY")
-    LeaveParty()
+    -- 1) Start from a clean group -- only if we're actually in a party (bots are
+    --    party members; nothing to remove/leave when solo).
+    local hadParty = GetNumPartyMembers() > 0
+    if hadParty then
+        SendChatMessage(".warstormbot bot remove *", "SAY")
+        LeaveParty()
+    end
 
-    -- 2) Bulk-add every bot at once (after a short settle for the remove/leave).
-    PlayerbotManager_After(1, function()
+    -- 2) Bulk-add every bot at once (after a short settle if we just cleared a party).
+    PlayerbotManager_After(hadParty and 1 or 0, function()
         for _, m in ipairs(members) do
             PlayerbotManager_AddBot(m.class)
         end
