@@ -39,7 +39,7 @@ Behavior commands frequently use role prefixes the server understands: `@tank`, 
 
 ### State
 
-All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonPos`, `selectedTab`, plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield), restores the button position, and opens the last-used tab.
+All persistent state lives in the `PlayerbotManagerDB` SavedVariable: minimap `buttonAngle` (degrees around the minimap ring), `selectedTab`, plus `selectedClass`/`selectedClassIndex` and `selectedFormation`/`selectedFormationIndex` driven by the cyclers. `PlayerbotManager_Init` (fired on `PLAYER_LOGIN`) seeds defaults (Druid / Shield), re-places the button via `PlayerbotManager_PositionButton` (after ElvUI has sized the minimap), and opens the last-used tab. The minimap button uses the standard LibDBIcon-style angle math (`Minimap:GetCenter()` + cursor angle, size/scale independent) — not a fixed-offset formula — so it tracks the real minimap center under ElvUI.
 
 ## Naming caveat
 

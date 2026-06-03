@@ -4,7 +4,7 @@
 -- are kept because Bindings.xml references them by name.
 
 -- Global variables
-PlayerbotManagerDB = PlayerbotManagerDB or { buttonPos = { x = 0, y = 0 } }
+PlayerbotManagerDB = PlayerbotManagerDB or {}
 
 -- List of classes and their command names
 local classes = {
@@ -359,19 +359,28 @@ end
 -- Minimap button
 ------------------------------------------------------------------------
 
+-- Place the button on a ring around the *true* minimap centre using the saved
+-- angle (degrees, default 225 = lower-left). Size-/scale-independent, so it
+-- works with ElvUI's resized minimap on 3.3.5a.
+function PlayerbotManager_PositionButton()
+    if not PlayerbotManagerButtonFrame then return end
+    local angle = math.rad(PlayerbotManagerDB.buttonAngle or 225)
+    local rx = (Minimap:GetWidth() / 2) + 5
+    local ry = (Minimap:GetHeight() / 2) + 5
+    PlayerbotManagerButtonFrame:ClearAllPoints()
+    PlayerbotManagerButtonFrame:SetPoint("CENTER", Minimap, "CENTER",
+        math.cos(angle) * rx, math.sin(angle) * ry)
+end
+
 function PlayerbotManagerButtonFrame_BeingDragged()
-    local buttonFrame = PlayerbotManagerButtonFrame
-    local xpos, ypos = GetCursorPosition()
-    local xmin, ymin = Minimap:GetLeft(), Minimap:GetBottom()
-
-    xpos = xmin - xpos / Minimap:GetEffectiveScale() + 70
-    ypos = ypos / Minimap:GetEffectiveScale() - ymin - 70
-
-    local angle = math.deg(math.atan2(ypos, xpos))
-    local x, y = -80 * cos(angle), 80 * sin(angle)
-    buttonFrame:ClearAllPoints()
-    buttonFrame:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 53 - x, y - 5)
-    PlayerbotManagerDB.buttonPos = { x = 53 - x, y = y - 5 }
+    -- Cursor position -> angle around the minimap centre (both in the same
+    -- coordinate space once the cursor is divided by the minimap's scale).
+    local scale = Minimap:GetEffectiveScale()
+    local mx, my = Minimap:GetCenter()
+    local cx, cy = GetCursorPosition()
+    cx, cy = cx / scale, cy / scale
+    PlayerbotManagerDB.buttonAngle = math.deg(math.atan2(cy - my, cx - mx))
+    PlayerbotManager_PositionButton()
 end
 
 function PlayerbotManagerButtonFrame_OnClick()
@@ -396,10 +405,6 @@ local function BuildMinimapButton()
     local b = CreateFrame("Button", "PlayerbotManagerButtonFrame", Minimap)
     b:SetWidth(32)
     b:SetHeight(32)
-    -- Default position: just inside the minimap's bottom-left corner. This stays
-    -- on the visible map regardless of minimap size/position (ElvUI included),
-    -- unlike a TOP anchor which pushed it off the top of the screen.
-    b:SetPoint("BOTTOMLEFT", Minimap, "BOTTOMLEFT", 6, 6)
     -- Render above the minimap's own textures, otherwise the icon is hidden
     b:SetFrameStrata("MEDIUM")
     b:SetFrameLevel(Minimap:GetFrameLevel() + 8)
@@ -422,6 +427,7 @@ local function BuildMinimapButton()
     b:SetScript("OnClick", PlayerbotManagerButtonFrame_OnClick)
     b:SetScript("OnEnter", PlayerbotManagerButtonFrame_OnEnter)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    PlayerbotManager_PositionButton()
 end
 
 ------------------------------------------------------------------------
@@ -447,12 +453,9 @@ function PlayerbotManager_Init()
     end
     RefreshFormationText()
 
-    -- Restore the saved minimap button position (skip the untouched default)
-    local pos = PlayerbotManagerDB.buttonPos
-    if PlayerbotManagerButtonFrame and pos and (pos.x ~= 0 or pos.y ~= 0) then
-        PlayerbotManagerButtonFrame:ClearAllPoints()
-        PlayerbotManagerButtonFrame:SetPoint("TOPLEFT", Minimap, "TOPLEFT", pos.x, pos.y)
-    end
+    -- Re-place the minimap button now that ElvUI has finished sizing the minimap
+    PlayerbotManagerDB.buttonPos = nil   -- drop the old, broken x/y format
+    PlayerbotManager_PositionButton()
 
     -- Open on the last-used tab
     PlayerbotManager_ShowTab(PlayerbotManagerDB.selectedTab or 1)
