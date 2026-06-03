@@ -271,7 +271,7 @@ local function BuildControlsTab(content)
             local cmd = role.prefix .. action
             -- short glyph keeps cells readable in the narrow column
             local b = CreateButton(content, action:sub(1, 3), cellW, cellH)
-            b:SetNormalFontObject("GameFontNormalSmall")
+            b:SetNormalFontObject(GameFontNormalSmall)
             b:SetPoint("TOPLEFT", content, "TOPLEFT", colX[c], rowY)
             b:SetScript("OnClick", function()
                 PlayerbotManager_SetCommand(cmd)
@@ -284,7 +284,7 @@ local function BuildControlsTab(content)
     local fW = 50
     for i, item in ipairs(footer) do
         local b = CreateButton(content, item.label, fW, 22)
-        b:SetNormalFontObject("GameFontNormalSmall")
+        b:SetNormalFontObject(GameFontNormalSmall)
         b:SetPoint("TOPLEFT", content, "TOPLEFT", 4 + (i - 1) * (fW + 1), footerY)
         if item.command then
             local cmd = item.command
@@ -396,7 +396,9 @@ local function BuildMinimapButton()
     b:SetWidth(32)
     b:SetHeight(32)
     b:SetPoint("TOP", Minimap, "TOP", 0, 0)
-    b:SetFrameStrata("LOW")
+    -- Render above the minimap's own textures, otherwise the icon is hidden
+    b:SetFrameStrata("MEDIUM")
+    b:SetFrameLevel(Minimap:GetFrameLevel() + 8)
     b:EnableMouse(true)
     b:RegisterForDrag("RightButton")
     b:SetNormalTexture("Interface\\Icons\\Ability_rogue_shadowstrikes")
@@ -474,5 +476,6 @@ function PlayerbotManager_SkinElvUI()
 end
 
 -- Build the UI at load time; Init/skin run on PLAYER_LOGIN.
-BuildUI()
+-- Minimap button first: it's the entry point, so build it independently of the panel.
 BuildMinimapButton()
+BuildUI()
