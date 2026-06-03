@@ -1,0 +1,679 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/">
+
+	<Frame name="PlayerbotManagerButtonFrame" parent="Minimap" enableMouse="true" hidden="false" frameStrata="LOW">
+		<Size>
+			<AbsDimension x="32" y="32" />
+		</Size>
+		<Anchors>
+			<Anchor point="TOP" relativeTo="Minimap" relativePoint="TOP">
+				<Offset>
+					<AbsDimension x="0" y="0" />
+				</Offset>
+			</Anchor>
+		</Anchors>
+		<Frames>
+			<Button name="PlayerbotManagerButton">
+				<Size>
+					<AbsDimension x="24" y="24" />
+				</Size>
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="0" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<NormalTexture file="Interface\Icons\Ability_rogue_shadowstrikes" />
+				<PushedTexture file="Interface\Icons\Ability_rogue_shadowstrikes" />
+				<HighlightTexture alphaMode="ADD" file="Interface\Minimap\UI-Minimap-ZoomButton-Highlight" />
+				<Scripts>
+					<OnLoad>
+						this:RegisterForDrag("RightButton");
+						this.dragme = false;
+					</OnLoad>
+					<OnDragStart>
+						this.dragme = true;
+					</OnDragStart>
+					<OnDragStop>
+						this.dragme = false;
+					</OnDragStop>
+					<OnUpdate>
+						if this.dragme then
+							PlayerbotManagerButtonFrame_BeingDragged();
+						end
+					</OnUpdate>
+					<OnClick>
+						PlayerbotManagerButtonFrame_OnClick();
+					</OnClick>
+					<OnEnter>
+						PlayerbotManagerButtonFrame_OnEnter();
+					</OnEnter>
+					<OnLeave>
+						GameTooltip:Hide();
+					</OnLeave>
+				</Scripts>
+			</Button>
+		</Frames>
+	</Frame>
+	<Frame name="PlayerbotManagerFrame" parent="UIParent" toplevel="true" enableMouse="true" movable="true">
+		<Scripts>
+			<OnLoad>
+				PlayerbotManagerFrame:RegisterForDrag("LeftButton");
+				PlayerbotManagerFrame:Hide();
+				this:RegisterEvent("PLAYER_LOGIN");
+			</OnLoad>
+			<OnDragStart>
+				PlayerbotManagerFrame:StartMoving();
+			</OnDragStart>
+			<OnDragStop>
+				PlayerbotManagerFrame:StopMovingOrSizing();
+			</OnDragStop>
+			<OnEvent>
+				PlayerbotManager_Init();
+			</OnEvent>
+		</Scripts>
+		<Size x="280" y="520" />
+		<Anchors>
+			<Anchor point="TOP">
+				<Offset>
+					<AbsDimension x="0" y="-40" />
+				</Offset>
+			</Anchor>
+		</Anchors>
+		<Backdrop bgFile="Interface\DialogFrame\UI-DialogBox-Background" edgeFile="Interface\DialogFrame\UI-DialogBox-Border" tile="true">
+			<BackgroundInsets>
+				<AbsInset left="12" right="12" top="12" bottom="12" />
+			</BackgroundInsets>
+			<TileSize>
+				<AbsValue val="32" />
+			</TileSize>
+			<EdgeSize>
+				<AbsValue val="32" />
+			</EdgeSize>
+			<Color r="0" g="0" b="0" a="0.6" />
+		</Backdrop>
+		<Layers>
+			<Layer level="OVERLAY">
+				<FontString name="PlayerbotManagerTitle" inherits="GameFontNormalLarge" text="Warstorm Bot Manager v1.0">
+					<Size x="260" y="20" />
+					<Anchors>
+						<Anchor point="CENTER" relativePoint="TOP">
+							<Offset>
+								<AbsDimension x="0" y="-30" />
+							</Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="TargetLabel" inherits="GameFontNormal" text="Add Class">
+					<Size x="260" y="20" />
+					<Anchors>
+						<Anchor point="CENTER" relativePoint="TOP">
+							<Offset>
+								<AbsDimension x="0" y="-60" />
+							</Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="SelectedClassText" inherits="GameFontHighlight" text="Druid">
+					<Size x="100" y="20" />
+					<Anchors>
+						<Anchor point="TOP">
+							<Offset>
+								<AbsDimension x="-60" y="-85" />
+							</Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="FormationLabel" inherits="GameFontNormal" text="Bot Formation (Optional Placement)">
+					<Size x="260" y="20" />
+					<Anchors>
+						<Anchor point="CENTER" relativePoint="TOP">
+							<Offset>
+								<AbsDimension x="0" y="-130" />
+							</Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="SelectedFormationText" inherits="GameFontHighlight" text="Shield">
+					<Size x="100" y="20" />
+					<Anchors>
+						<Anchor point="TOP">
+							<Offset>
+								<AbsDimension x="-45" y="-155" />
+							</Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+		<Frames>
+			<Button name="PrevClassButton" inherits="UIPanelButtonTemplate" text="&lt;">
+				<Size x="30" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-100" y="-80" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_PrevClass();
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="NextClassButton" inherits="UIPanelButtonTemplate" text="&gt;">
+				<Size x="30" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-20" y="-80" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_NextClass();
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="AddClassButton" inherits="UIPanelButtonTemplate" text="Add">
+				<Size x="40" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="20" y="-80" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_AddBot(PlayerbotManagerDB.selectedClass);
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdRemoveAll" inherits="UIPanelButtonTemplate" text="Remove All">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="85" y="-80" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+				<OnClick>
+					SendChatMessage(".warstormbot bot remove *", "SAY")
+					LeaveParty()
+				</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="PrevFormationButton" inherits="UIPanelButtonTemplate" text="&lt;">
+				<Size x="30" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-100" y="-150" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_PrevFormation();
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="NextFormationButton" inherits="UIPanelButtonTemplate" text="&gt;">
+				<Size x="30" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="10" y="-150" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_NextFormation();
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="SetFormationButton" inherits="UIPanelButtonTemplate" text="Set">
+				<Size x="35" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="55" y="-150" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetFormation(PlayerbotManagerDB.selectedFormation);
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CheckFormationButton" inherits="UIPanelButtonTemplate" text="Check">
+				<Size x="50" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="100" y="-150" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("formation");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdSummon" inherits="UIPanelButtonTemplate" text="Summon">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-230" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("summon");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdRelease" inherits="UIPanelButtonTemplate" text="Release">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-230" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("release");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdDrink" inherits="UIPanelButtonTemplate" text="Drink">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-230" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("say drink");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="TankAttack" inherits="UIPanelButtonTemplate" text="Tank Attack">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-200" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@tank attack");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdAttack" inherits="UIPanelButtonTemplate" text="Attack">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-200" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("attack");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdDpsAttack" inherits="UIPanelButtonTemplate" text="DPS Attack">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-200" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@dps attack");
+					</OnClick>
+				</Scripts>
+			</Button>	
+			<Button name="CmdStay" inherits="UIPanelButtonTemplate" text="Stay">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-260" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("stay");
+					</OnClick>
+				</Scripts>
+			</Button>							
+				<Button name="CmdFollow" inherits="UIPanelButtonTemplate" text="Follow">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-260" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("follow");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdInitEpic" inherits="UIPanelButtonTemplate" text="ReSpec">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-260" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+				<OnClick>
+					SendChatMessage(".warstormbot bot init=epic", "SAY")
+				</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="MeleeAttack" inherits="UIPanelButtonTemplate" text="Melee Atk">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-290" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@melee attack");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="RangedAttack" inherits="UIPanelButtonTemplate" text="Ranged Atk">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-290" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@ranged attack");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="HealAttack" inherits="UIPanelButtonTemplate" text="Heal Attack">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-290" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@heal attack");
+					</OnClick>
+				</Scripts>
+			</Button>	
+			<Button name="TankStay" inherits="UIPanelButtonTemplate" text="Tank Stay">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-320" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@tank stay");
+					</OnClick>
+				</Scripts>
+			</Button>		
+			<Button name="HealStay" inherits="UIPanelButtonTemplate" text="Heal Stay">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-320" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@heal stay");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="HealMove" inherits="UIPanelButtonTemplate" text="Heal Follow">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-320" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@heal follow");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="DPSStay" inherits="UIPanelButtonTemplate" text="DPS Stay">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-350" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@dps stay");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="DPSMove" inherits="UIPanelButtonTemplate" text="DPS Follow">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-350" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@dps follow");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="TankMove" inherits="UIPanelButtonTemplate" text="Tank Follow">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-350" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@tank follow");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="HealFlee" inherits="UIPanelButtonTemplate" text="Heal Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-410" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@heal flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="DPSFlee" inherits="UIPanelButtonTemplate" text="DPS Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-410" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@dps flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="MeleeFlee" inherits="UIPanelButtonTemplate" text="Melee Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-410" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@melee flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="RangedFlee" inherits="UIPanelButtonTemplate" text="Ranged Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-80" y="-440" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@ranged flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="TankFlee" inherits="UIPanelButtonTemplate" text="Tank Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-440" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("@tank flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CmdFlee" inherits="UIPanelButtonTemplate" text="Flee">
+				<Size x="80" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="80" y="-440" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("flee");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="RTISkull" inherits="UIPanelButtonTemplate" text="Skull (RTI)">
+				<Size x="70" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="-70" y="-470" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("rti skull");
+						PlayerbotManager_SetCommand("attack rti target");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="RTIMoon" inherits="UIPanelButtonTemplate" text="Moon (CC)">
+				<Size x="70" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="0" y="-470" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManager_SetCommand("rti cc moon");
+					</OnClick>
+				</Scripts>
+			</Button>
+			<Button name="CloseButton" inherits="UIPanelButtonTemplate" text="Close">
+				<Size x="70" y="30" />
+				<Anchors>
+					<Anchor point="TOP">
+						<Offset>
+							<AbsDimension x="70" y="-470" />
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						PlayerbotManagerFrame:Hide();
+					</OnClick>
+				</Scripts>
+			</Button>
+		</Frames>
+	</Frame>
+</Ui>

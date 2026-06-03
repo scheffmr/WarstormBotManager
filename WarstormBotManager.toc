@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: Warstorm Bot Manager
+## Notes: A simple addon for managing bots on Warstorm.org
+## Author: Moroes
+## Version: 1.0
+## SavedVariables: PlayerbotManagerDB
+
+Bindings.xml
+WarstormBotManager.xml
+WarstormBotManager.lua

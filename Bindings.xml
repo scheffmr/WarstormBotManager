@@ -1,0 +1,30 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/">
+
+	<Bindings>
+		<Binding name="PLAYERBOTMANAGER_TOGGLE" header="PLAYERBOTMANAGER">
+			PlayerbotManagerButtonFrame_OnClick()
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_SUMMON">
+			PlayerbotManager_SetCommand("summon")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_ATTACK">
+			PlayerbotManager_SetCommand("@tank attack")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_FOLLOW">
+			PlayerbotManager_SetCommand("follow")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_STAY">
+			PlayerbotManager_SetCommand("stay")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_RTSC_ON">
+			PlayerbotManager_SetCommand("rtsc")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_RTSC_SAVE">
+			PlayerbotManager_SetCommand("rtsc save 1")
+		</Binding>
+		<Binding name="PLAYERBOTMANAGER_RTSC_GO">
+			PlayerbotManager_SetCommand("rtsc go 1")
+		</Binding>
+	</Bindings>
+
+</Ui>
