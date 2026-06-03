@@ -369,6 +369,7 @@ function PlayerbotManagerButtonFrame_BeingDragged()
 
     local angle = math.deg(math.atan2(ypos, xpos))
     local x, y = -80 * cos(angle), 80 * sin(angle)
+    buttonFrame:ClearAllPoints()
     buttonFrame:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 53 - x, y - 5)
     PlayerbotManagerDB.buttonPos = { x = 53 - x, y = y - 5 }
 end
@@ -395,7 +396,10 @@ local function BuildMinimapButton()
     local b = CreateFrame("Button", "PlayerbotManagerButtonFrame", Minimap)
     b:SetWidth(32)
     b:SetHeight(32)
-    b:SetPoint("TOP", Minimap, "TOP", 0, 0)
+    -- Default position: just inside the minimap's bottom-left corner. This stays
+    -- on the visible map regardless of minimap size/position (ElvUI included),
+    -- unlike a TOP anchor which pushed it off the top of the screen.
+    b:SetPoint("BOTTOMLEFT", Minimap, "BOTTOMLEFT", 6, 6)
     -- Render above the minimap's own textures, otherwise the icon is hidden
     b:SetFrameStrata("MEDIUM")
     b:SetFrameLevel(Minimap:GetFrameLevel() + 8)
