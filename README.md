@@ -21,9 +21,11 @@ and behavior orders go to `PARTY`.
 
 ## Installation
 
-1. Download or clone this repository.
-2. Copy the `WarstormBotManager` folder into your WoW client's
-   `Interface/AddOns/` directory.
+1. Download the latest `WarstormBotManager-vX.Y.zip` from the
+   [**Releases**](https://github.com/scheffmr/WarstormBotManager/releases/latest) page.
+2. Extract it into your WoW client's `Interface/AddOns/` directory. The archive
+   already contains a correctly-named `WarstormBotManager` folder, so no renaming
+   is needed.
 3. Restart the client (or `/reload`) and enable the addon at the character select screen.
 
 ## Usage
