@@ -3,10 +3,9 @@
 -- and PlayerbotManagerButtonFrame, and the PlayerbotManager_* / *_OnClick globals,
 -- are kept because Bindings.xml references them by name.
 
--- Global variables
 PlayerbotManagerDB = PlayerbotManagerDB or {}
 
--- List of classes and their command names
+-- Classes and their addclass command tokens.
 local classes = {
     { name = "Warrior", command = "warrior" },
     { name = "Paladin", command = "paladin" },
@@ -20,7 +19,7 @@ local classes = {
     { name = "DK", command = "dk" }
 }
 
--- List of formations and their command names
+-- Formations and their command tokens.
 local formations = {
     { name = "Shield", command = "shield" },
     { name = "Chaos", command = "chaos" },
@@ -53,9 +52,9 @@ local footer = {
     { label = "CC",      command = "rti cc moon" },
 }
 
--- Talent spec command tokens per class (Warstorm-specific). The whisper sent to
--- a bot is "talents spec " .. token. The token is also shown in the Presets UI.
--- DK tokens are PLACEHOLDERS (could not be queried yet) -- verify in game.
+-- Talent spec command tokens per class (Warstorm-specific); the whisper sent to a
+-- bot is "talents spec " .. token, and the token is shown in the Presets UI.
+-- DK tokens are unverified placeholders (see TODO below).
 local specs = {
     Warrior = { "arms pve", "fury pve", "prot pve", "arms pvp", "fury pvp", "prot pvp" },
     Paladin = { "holy pve", "prot pve", "ret pve", "holy pvp", "prot pvp", "ret pvp" },
@@ -103,11 +102,10 @@ local function CreateButton(parent, text, w, h)
 end
 
 ------------------------------------------------------------------------
--- Command helpers (channel conventions preserved from v1.0)
+-- Command helpers
 ------------------------------------------------------------------------
 
 function PlayerbotManager_AddBot(class)
-    -- Use the command field from the classes table
     for _, classInfo in ipairs(classes) do
         if classInfo.name == class then
             SendChatMessage(".warstormbot bot addclass " .. classInfo.command, "SAY")
@@ -118,7 +116,6 @@ function PlayerbotManager_AddBot(class)
 end
 
 function PlayerbotManager_SetFormation(formation)
-    -- Use the command field from the formations table
     for _, formationInfo in ipairs(formations) do
         if formationInfo.name == formation then
             SendChatMessage("formation " .. formationInfo.command, "PARTY")
@@ -129,13 +126,13 @@ function PlayerbotManager_SetFormation(formation)
 end
 
 function PlayerbotManager_SetCommand(command)
-    -- Send command to party chat without /p prefix
+    -- Bot orders go to PARTY chat (no /p prefix).
     SendChatMessage(command, "PARTY")
 end
 
 ------------------------------------------------------------------------
--- Lightweight scheduler (3.3.5a has no guaranteed C_Timer, so we run our
--- own OnUpdate queue). Used to space out the preset-apply chat commands.
+-- Lightweight OnUpdate scheduler (3.3.5a has no guaranteed C_Timer). Used to
+-- space out the preset-apply chat commands.
 ------------------------------------------------------------------------
 
 local pending = {}   -- list of { at = <GetTime target>, fn = <callback> }
@@ -186,9 +183,9 @@ local function BuildSpecQueue(members)
     return queue
 end
 
--- Scan the party and whisper one queued spec to each matching bot (mutates the
--- queue). With 3 shamans + {resto,enh,ele} queued, all three get set -- which
--- bot gets which doesn't matter. Specs left over (a bot that didn't spawn) warn.
+-- Whisper one queued spec to each party bot of a matching class (consumes the
+-- queue). Assignment within a class is order-independent; specs left unassigned
+-- (fewer bots than queued) are reported.
 local function WhisperSpecs(queue)
     for i = 1, GetNumPartyMembers() do
         local name = UnitName("party" .. i)
@@ -236,15 +233,14 @@ function PlayerbotManager_ApplyPreset(preset)
     applying = true
     print("PlayerbotManager: applying preset '" .. preset.name .. "' (" .. #members .. " bots)...")
 
-    -- 1) Start from a clean group -- only if we're actually in a party (bots are
-    --    party members; nothing to remove/leave when solo).
+    -- 1) Clear any existing group first (only when grouped; bots are party members).
     local hadParty = GetNumPartyMembers() > 0
     if hadParty then
         SendChatMessage(".warstormbot bot remove *", "SAY")
         LeaveParty()
     end
 
-    -- 2) Bulk-add every bot at once (after a short settle if we just cleared a party).
+    -- 2) Bulk-add every bot (after a short settle if a group was just cleared).
     PlayerbotManager_After(hadParty and 1 or 0, function()
         for _, m in ipairs(members) do
             PlayerbotManager_AddBot(m.class)
@@ -259,17 +255,16 @@ function PlayerbotManager_ApplyPreset(preset)
             print("PlayerbotManager: preset '" .. preset.name .. "' applied (autogear sent).")
             applying = false
         end)
-        -- 4) Loot last, on its own frame after autogear -- setting it in the same
-        --    frame as the threshold (or amid group updates) let the Free For All
-        --    method get clobbered while the threshold stuck.
+        -- 4) Set loot last, on its own frame after autogear: group updates during
+        --    formation can otherwise revert the loot method.
         PlayerbotManager_After(2, function()
             PlayerbotManager_SetGroupLoot()
         end)
     end)
 end
 
--- Set the group to Free For All loot with an Epic threshold (4). Method and
--- threshold are set on separate frames so the FFA change isn't clobbered.
+-- Set Free For All loot with an Epic threshold (4). Method and threshold are set
+-- on separate frames; setting both together can drop the method change.
 function PlayerbotManager_SetGroupLoot()
     if GetNumPartyMembers() == 0 or not IsPartyLeader() then return end
     SetLootMethod("freeforall")
@@ -280,19 +275,16 @@ function PlayerbotManager_SetGroupLoot()
     end)
 end
 
--- On level up: re-initialise the bots to epic, re-apply the last comp's specs,
--- and autogear. Only acts when bots are present.
--- Re-init the current bots: per-bot `init=epic <Name>` to SAY (the server splits
--- args on spaces, so the bot name must be a separate token -- a glued-on name
--- yields "usage: add/remove PLAYERNAME"), then re-apply the last comp's specs and
--- autogear. Shared by the level-up handler, the ReSpec button, and `/wbm reinit`.
+-- Re-init the current bots: per-bot `.warstormbot bot init=epic <Name>` to SAY
+-- (the name must be a separate, space-delimited token), then re-apply the last
+-- comp's specs and autogear. Shared by the level-up handler, the ReSpec button,
+-- and /wbm reinit.
 function PlayerbotManager_ReinitBots()
     if GetNumPartyMembers() == 0 then
         print("PlayerbotManager: no bots in the party to re-init.")
         return
     end
-    -- init=epic is rejected in combat (and you're usually in combat on level up),
-    -- so defer until combat ends (PLAYER_REGEN_ENABLED runs the pending re-init).
+    -- init=epic is rejected while in combat; defer until PLAYER_REGEN_ENABLED.
     if UnitAffectingCombat("player") then
         reinitPending = true
         print("PlayerbotManager: in combat -- bots will re-init when combat ends.")
@@ -317,7 +309,7 @@ function PlayerbotManager_ReinitBots()
     end)
 end
 
--- Auto-trigger on level up (gated by the toggle; silent when solo).
+-- Level-up handler: gated by the autoLevelUp toggle; no-op when solo.
 function PlayerbotManager_OnLevelUp()
     if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
     if GetNumPartyMembers() == 0 then return end
@@ -950,8 +942,7 @@ function PlayerbotManager_SkinElvUI()
 end
 
 ------------------------------------------------------------------------
--- Slash command (panel toggle + the level-up auto-init toggle, until the
--- toggle gets a permanent home in the UI)
+-- Slash command: /wbm (panel toggle, reinit, loot, level-up toggle)
 ------------------------------------------------------------------------
 
 SLASH_WARSTORMBOTMANAGER1 = "/wbm"
