@@ -2,7 +2,7 @@
 ## Title: Warstorm Bot Manager
 ## Notes: A simple addon for managing bots on Warstorm.org
 ## Author: Moroes
-## Version: 1.1
+## Version: 1.2
 ## SavedVariables: PlayerbotManagerDB
 ## OptionalDeps: ElvUI
 

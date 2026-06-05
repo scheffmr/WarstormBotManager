@@ -3,10 +3,9 @@
 -- and PlayerbotManagerButtonFrame, and the PlayerbotManager_* / *_OnClick globals,
 -- are kept because Bindings.xml references them by name.
 
--- Global variables
 PlayerbotManagerDB = PlayerbotManagerDB or {}
 
--- List of classes and their command names
+-- Classes and their addclass command tokens.
 local classes = {
     { name = "Warrior", command = "warrior" },
     { name = "Paladin", command = "paladin" },
@@ -20,7 +19,7 @@ local classes = {
     { name = "DK", command = "dk" }
 }
 
--- List of formations and their command names
+-- Formations and their command tokens.
 local formations = {
     { name = "Shield", command = "shield" },
     { name = "Chaos", command = "chaos" },
@@ -48,16 +47,40 @@ local actions = { "attack", "stay", "follow", "flee" }
 local footer = {
     { label = "Summon",  command = "summon" },
     { label = "Release", command = "release" },
-    { label = "Drink",   command = "say drink" },
+    { label = "Drink",   command = "drink" },
     { label = "Skull",   command = nil },   -- rti skull + attack rti target
     { label = "CC",      command = "rti cc moon" },
 }
 
+-- Talent spec command tokens per class (Warstorm-specific); the whisper sent to a
+-- bot is "talents spec " .. token, and the token is shown in the Presets UI.
+-- DK tokens are unverified placeholders (see TODO below).
+local specs = {
+    Warrior = { "arms pve", "fury pve", "prot pve", "arms pvp", "fury pvp", "prot pvp" },
+    Paladin = { "holy pve", "prot pve", "ret pve", "holy pvp", "prot pvp", "ret pvp" },
+    Hunter  = { "bm pve", "mm pve", "surv pve", "bm pvp", "mm pvp", "surv pvp" },
+    Rogue   = { "as pve", "combat pve", "subtlety pve", "as pvp", "combat pvp", "subtlety pvp" },
+    Priest  = { "disc pve", "holy pve", "shadow pve", "disc pvp", "holy pvp", "shadow pvp" },
+    Shaman  = { "ele pve", "enh pve", "resto pve", "ele pvp", "enh pvp", "resto pvp" },
+    Mage    = { "arcane pve", "fire pve", "frost pve", "frostfire pve", "arcane pvp", "fire pvp", "frost pvp" },
+    Warlock = { "affli pve", "demo pve", "destro pve", "affli pvp", "demo pvp", "destro pvp" },
+    Druid   = { "balance pve", "bear pve", "resto pve", "cat pve", "balance pvp", "cat pvp", "resto pvp" },
+    -- TODO: verify DK tokens once a high-level Death Knight is available.
+    DK      = { "blood pve", "frost pve", "unholy pve", "blood pvp", "frost pvp", "unholy pvp" },
+}
+
+-- Sentinel for an empty builder slot, so a preset may hold fewer than 4 bots.
+local NONE_CLASS = "(none)"
+
 -- Widgets collected for optional ElvUI skinning
 local skinButtons = {}
+local skinEditBoxes = {}
+local skinChecks = {}
 local tabButtons = {}
 local contentFrames = {}
+local tabHeights = {}   -- per-tab target window height; ShowTab resizes to fit
 local closeButton
+local autoLevelCheck   -- the "Re-init on level up" checkbox on the Bots tab
 
 -- Return the index of the entry whose .name matches, or nil if absent
 local function IndexByName(list, name)
@@ -80,11 +103,10 @@ local function CreateButton(parent, text, w, h)
 end
 
 ------------------------------------------------------------------------
--- Command helpers (channel conventions preserved from v1.0)
+-- Command helpers
 ------------------------------------------------------------------------
 
 function PlayerbotManager_AddBot(class)
-    -- Use the command field from the classes table
     for _, classInfo in ipairs(classes) do
         if classInfo.name == class then
             SendChatMessage(".warstormbot bot addclass " .. classInfo.command, "SAY")
@@ -95,7 +117,6 @@ function PlayerbotManager_AddBot(class)
 end
 
 function PlayerbotManager_SetFormation(formation)
-    -- Use the command field from the formations table
     for _, formationInfo in ipairs(formations) do
         if formationInfo.name == formation then
             SendChatMessage("formation " .. formationInfo.command, "PARTY")
@@ -106,40 +127,377 @@ function PlayerbotManager_SetFormation(formation)
 end
 
 function PlayerbotManager_SetCommand(command)
-    -- Send command to party chat without /p prefix
+    -- Bot orders go to PARTY chat (no /p prefix).
     SendChatMessage(command, "PARTY")
+end
+
+------------------------------------------------------------------------
+-- Lightweight OnUpdate scheduler (3.3.5a has no guaranteed C_Timer). Used to
+-- space out the preset-apply chat commands.
+------------------------------------------------------------------------
+
+local pending = {}   -- list of { at = <GetTime target>, fn = <callback> }
+local scheduler = CreateFrame("Frame")
+scheduler:SetScript("OnUpdate", function()
+    if #pending == 0 then return end
+    local now = GetTime()
+    local i = 1
+    while i <= #pending do
+        if now >= pending[i].at then
+            local item = table.remove(pending, i)
+            -- pcall so one failing callback can't abort the loop (and thus skip
+            -- later-due items or the `applying` reset that follows an apply step).
+            local ok, err = pcall(item.fn)
+            if not ok then
+                print("PlayerbotManager: scheduled task error: " .. tostring(err))
+            end
+        else
+            i = i + 1
+        end
+    end
+end)
+
+-- Run fn after `delay` seconds.
+function PlayerbotManager_After(delay, fn)
+    table.insert(pending, { at = GetTime() + delay, fn = fn })
+end
+
+------------------------------------------------------------------------
+-- Team composition presets
+------------------------------------------------------------------------
+
+-- Map our class display names to the UnitClass() token (locale-independent),
+-- so specs can be matched to party members regardless of client language.
+local classToken = {
+    Warrior = "WARRIOR", Paladin = "PALADIN", Hunter = "HUNTER", Rogue = "ROGUE",
+    Priest = "PRIEST", Shaman = "SHAMAN", Mage = "MAGE", Warlock = "WARLOCK",
+    Druid = "DRUID", DK = "DEATHKNIGHT",
+}
+
+-- Group a member list's specs by class token, e.g. SHAMAN -> {resto pve, enh pve}.
+local function BuildSpecQueue(members)
+    local queue = {}        -- queue[token] = { spec, spec, ... }
+    for _, m in ipairs(members or {}) do
+        if m.class and m.class ~= NONE_CLASS then
+            local token = classToken[m.class]
+            if token and m.spec then
+                queue[token] = queue[token] or {}
+                table.insert(queue[token], m.spec)
+            end
+        end
+    end
+    return queue
+end
+
+-- Whisper one queued spec to each party bot of a matching class (consumes the
+-- queue). Assignment within a class is order-independent; specs left unassigned
+-- (fewer bots than queued) are reported. Returns the list of bot names whispered
+-- (so the caller can wait for their "picking ..." confirmations).
+--
+-- `onlyNames` (optional set of party-member names) restricts whispers to those
+-- members -- used by incremental Add so existing, already-specced bots aren't
+-- re-specced; nil means every party member is eligible.
+local function WhisperSpecs(queue, onlyNames)
+    -- Assumption: every party member is a bot. On 3.3.5a there is no reliable
+    -- client-side signal to tell bots from real players, so a spec whisper that
+    -- reaches an actual player is harmless (cosmetic). Risk accepted by design.
+    local whispered = {}
+    for i = 1, GetNumPartyMembers() do
+        local name = UnitName("party" .. i)
+        if name and (not onlyNames or onlyNames[name]) then
+            local _, token = UnitClass("party" .. i)
+            local q = token and queue[token]
+            if q and #q > 0 then
+                SendChatMessage("talents spec " .. table.remove(q, 1), "WHISPER", nil, name)
+                table.insert(whispered, name)
+            end
+        end
+    end
+    for _, left in pairs(queue) do
+        for _, leftover in ipairs(left) do
+            print("  (no bot for spec '" .. leftover .. "' -- a bot may not have spawned)")
+        end
+    end
+    return whispered
+end
+
+------------------------------------------------------------------------
+-- Spec-confirmation tracking
+--
+-- After whispering "talents spec ..." each bot replies in WHISPER with
+-- "picking <spec>". We wait until every whispered bot confirms before sending
+-- autogear; if some never reply within the timeout we warn and skip autogear,
+-- so a half-specced group isn't geared for the wrong spec.
+------------------------------------------------------------------------
+
+local awaiting = nil   -- { remaining = {name=true,...}, count, onDone, token }
+
+local confirmFrame = CreateFrame("Frame")
+confirmFrame:RegisterEvent("CHAT_MSG_WHISPER")
+confirmFrame:SetScript("OnEvent", function(self, event, message, sender)
+    if not awaiting or not sender then return end
+    local short = string.match(sender, "^[^-]+") or sender   -- strip "-Realm" if present
+    if awaiting.remaining[short] and message and string.find(string.lower(message), "picking") then
+        awaiting.remaining[short] = nil
+        awaiting.count = awaiting.count - 1
+        if awaiting.count <= 0 then
+            local cb = awaiting.onDone
+            awaiting = nil
+            cb(true, {})
+        end
+    end
+end)
+
+-- Wait up to `timeout` seconds for every name in `names` (array) to whisper
+-- "picking ...". onDone(allConfirmed, missing) fires exactly once: immediately
+-- when all confirm, or at the timeout with the still-missing names.
+function PlayerbotManager_AwaitSpecConfirms(names, timeout, onDone)
+    local remaining, count = {}, 0
+    for _, n in ipairs(names or {}) do
+        if not remaining[n] then remaining[n] = true; count = count + 1 end
+    end
+    if count == 0 then onDone(true, {}); return end
+    local token = {}
+    awaiting = { remaining = remaining, count = count, onDone = onDone, token = token }
+    PlayerbotManager_After(timeout, function()
+        -- Only fire if this same await is still pending (a newer one supersedes it).
+        if awaiting and awaiting.token == token then
+            local missing = {}
+            for n in pairs(awaiting.remaining) do table.insert(missing, n) end
+            awaiting = nil
+            onDone(false, missing)
+        end
+    end)
+end
+
+-- Shared warning when not every bot confirmed its spec in time.
+local function WarnSpecMissing(missing)
+    print("PlayerbotManager: WARNING - " .. #missing .. " bot(s) did not confirm their spec: " ..
+        table.concat(missing, ", "))
+    print("  autogear was NOT sent. Once the bots settle, send it manually:")
+    print("  type 'autogear' in party chat, or run /wbm reinit.")
+end
+
+local applying = false
+local reinitPending = false   -- a re-init was requested during combat; run it on regen
+
+-- Send `addclass` for each member, spaced out in time. Firing several
+-- SendChatMessage calls in one frame hits the chat throttle and the last
+-- message(s) get silently dropped -- so the last bot never spawns. Staggering
+-- them ~0.4s apart keeps every command. Returns the delay after which the last
+-- add has been sent, so the caller can time the follow-up steps.
+local ADD_STEP = 0.4
+local function AddBotsSpaced(list, baseDelay)
+    for i, m in ipairs(list) do
+        local cls = m.class
+        PlayerbotManager_After(baseDelay + (i - 1) * ADD_STEP, function()
+            PlayerbotManager_AddBot(cls)
+        end)
+    end
+    return baseDelay + math.max(0, #list - 1) * ADD_STEP
+end
+
+-- Apply a preset: remove existing bots, add all the preset's bots, then in
+-- one party scan whisper each class's chosen specs to that class's bots, set the
+-- group to Free For All / Epic loot, and finally send `autogear` to PARTY.
+function PlayerbotManager_ApplyPreset(preset)
+    if not preset then return end
+    if applying then
+        print("PlayerbotManager: a preset is already being applied, please wait.")
+        return
+    end
+
+    -- Collect the non-empty slots (copy, so the remembered comp is independent).
+    local members = {}
+    for _, m in ipairs(preset.members or {}) do
+        if m.class and m.class ~= NONE_CLASS then
+            table.insert(members, { class = m.class, spec = m.spec })
+        end
+    end
+    if #members == 0 then
+        print("PlayerbotManager: preset '" .. tostring(preset.name) .. "' has no bots.")
+        return
+    end
+
+    -- Remember this comp so PLAYER_LEVEL_UP can re-apply the same specs.
+    PlayerbotManagerDB.lastApplied = { name = preset.name, members = members }
+
+    applying = true
+    -- Safety net: if some apply step unexpectedly errors before the regular
+    -- reset (in the confirm callback), don't leave `applying` stuck true -- that
+    -- would block every future apply until /reload. Fires after the worst-case
+    -- sequence (whisper at ~4s + 6s confirm timeout = ~10s).
+    PlayerbotManager_After(13, function() applying = false end)
+    print("PlayerbotManager: applying preset '" .. preset.name .. "' (" .. #members .. " bots)...")
+
+    -- 1) Clear any existing group first (only when grouped; bots are party members).
+    local hadParty = GetNumPartyMembers() > 0
+    if hadParty then
+        SendChatMessage(".warstormbot bot remove *", "SAY")
+        LeaveParty()
+    end
+
+    -- 2) Add every bot, staggered (after a short settle if a group was just
+    --    cleared) so the chat throttle can't drop the last addclass.
+    local lastAdd = AddBotsSpaced(members, hadParty and 1 or 0)
+
+    -- 3) Once they've joined (last add + a settle), assign specs by class, wait
+    --    for every bot to confirm ("picking ..."), then gear -- so autogear can't
+    --    race ahead of a bot that hasn't switched spec yet.
+    PlayerbotManager_After(lastAdd + 2.5, function()
+        local whispered = WhisperSpecs(BuildSpecQueue(members))
+        PlayerbotManager_AwaitSpecConfirms(whispered, 6, function(allOk, missing)
+            if allOk then
+                SendChatMessage("autogear", "PARTY")
+                print("PlayerbotManager: preset '" .. preset.name .. "' applied (all bots confirmed, autogear sent).")
+            else
+                WarnSpecMissing(missing)
+            end
+            applying = false
+        end)
+        -- 4) Set loot last, on its own frame: group updates during formation can
+        --    otherwise revert the loot method.
+        PlayerbotManager_After(2, function()
+            PlayerbotManager_SetGroupLoot()
+        end)
+    end)
+end
+
+-- Set Free For All loot with an Epic threshold (4). Method and threshold are set
+-- on separate frames; setting both together can drop the method change.
+function PlayerbotManager_SetGroupLoot()
+    if GetNumPartyMembers() == 0 or not IsPartyLeader() then return end
+    SetLootMethod("freeforall")
+    PlayerbotManager_After(0.5, function()
+        if IsPartyLeader() then
+            SetLootThreshold(4)   -- 2=uncommon 3=rare 4=epic 5=legendary
+        end
+    end)
+end
+
+-- Re-init the current bots: per-bot `.warstormbot bot init=epic <Name>` to SAY
+-- (the name must be a separate, space-delimited token), then re-apply the last
+-- comp's specs and autogear. Shared by the level-up handler, the ReSpec button,
+-- and /wbm reinit.
+function PlayerbotManager_ReinitBots()
+    if GetNumPartyMembers() == 0 then
+        print("PlayerbotManager: no bots in the party to re-init.")
+        return
+    end
+    -- init=epic is rejected while in combat; defer until PLAYER_REGEN_ENABLED.
+    if UnitAffectingCombat("player") then
+        reinitPending = true
+        print("PlayerbotManager: in combat -- bots will re-init when combat ends.")
+        return
+    end
+    reinitPending = false
+    -- Assumption: every party member is a bot (see WhisperSpecs). init=epic for a
+    -- real player is rejected server-side, so a misfire here is harmless too.
+    for i = 1, GetNumPartyMembers() do
+        local n = UnitName("party" .. i)
+        if n then
+            SendChatMessage(".warstormbot bot init=epic " .. n, "SAY")
+        end
+    end
+    local last = PlayerbotManagerDB.lastApplied
+    PlayerbotManager_After(3, function()
+        if last and last.members then
+            local whispered = WhisperSpecs(BuildSpecQueue(last.members))
+            PlayerbotManager_AwaitSpecConfirms(whispered, 6, function(allOk, missing)
+                if allOk then
+                    SendChatMessage("autogear", "PARTY")
+                    print("PlayerbotManager: bots re-initialised (all confirmed, autogear sent).")
+                else
+                    WarnSpecMissing(missing)
+                end
+            end)
+        else
+            -- No remembered comp -> no specs to re-whisper, just gear.
+            PlayerbotManager_After(1, function()
+                SendChatMessage("autogear", "PARTY")
+                print("PlayerbotManager: bots re-initialised.")
+            end)
+        end
+    end)
+end
+
+-- Add the given members (each { class, spec }) as bots to the CURRENT party
+-- without removing existing bots, whisper each NEW bot its spec once it joins,
+-- wait for confirmations, then autogear. Specs target only the newly-joined
+-- party members (snapshot diff) so existing bots aren't re-specced. Used by the
+-- "Add to Party" button on the Team tab.
+function PlayerbotManager_AddTeam(members)
+    local list = {}
+    for _, m in ipairs(members or {}) do
+        if m.class and m.class ~= NONE_CLASS then
+            table.insert(list, { class = m.class, spec = m.spec })
+        end
+    end
+    if #list == 0 then
+        print("PlayerbotManager: add at least one class to the team first.")
+        return
+    end
+    if applying then
+        print("PlayerbotManager: busy applying a team, please wait.")
+        return
+    end
+    applying = true
+    PlayerbotManager_After(13, function() applying = false end)   -- safety (see ApplyPreset)
+
+    -- Snapshot the current bots so we spec only the new arrivals.
+    local before = {}
+    for i = 1, GetNumPartyMembers() do
+        local n = UnitName("party" .. i)
+        if n then before[n] = true end
+    end
+
+    print("PlayerbotManager: adding " .. #list .. " bot(s) to the party...")
+    -- Staggered so the chat throttle can't drop the last addclass.
+    local lastAdd = AddBotsSpaced(list, 0)
+
+    -- Fold the new bots into lastApplied so a level-up re-spec covers them too.
+    local la = PlayerbotManagerDB.lastApplied
+    if not la or not la.members then la = { name = "(team)", members = {} } end
+    for _, m in ipairs(list) do
+        table.insert(la.members, { class = m.class, spec = m.spec })
+    end
+    PlayerbotManagerDB.lastApplied = la
+
+    PlayerbotManager_After(lastAdd + 2.5, function()
+        local newNames = {}
+        for i = 1, GetNumPartyMembers() do
+            local n = UnitName("party" .. i)
+            if n and not before[n] then newNames[n] = true end
+        end
+        local whispered = WhisperSpecs(BuildSpecQueue(list), newNames)
+        PlayerbotManager_AwaitSpecConfirms(whispered, 6, function(allOk, missing)
+            if allOk then
+                SendChatMessage("autogear", "PARTY")
+                print("PlayerbotManager: bots added (all confirmed specs, autogear sent).")
+            else
+                WarnSpecMissing(missing)
+            end
+            applying = false
+        end)
+        PlayerbotManager_After(2, function() PlayerbotManager_SetGroupLoot() end)
+    end)
+end
+
+-- Level-up handler: gated by the autoLevelUp toggle; no-op when solo.
+function PlayerbotManager_OnLevelUp()
+    if PlayerbotManagerDB.autoLevelUp == false then return end   -- toggle (default on)
+    if GetNumPartyMembers() == 0 then return end
+    PlayerbotManager_ReinitBots()
 end
 
 ------------------------------------------------------------------------
 -- Selection cyclers
 ------------------------------------------------------------------------
 
-local function RefreshClassText()
-    if SelectedClassText then
-        SelectedClassText:SetText(PlayerbotManagerDB.selectedClass)
-    end
-end
-
 local function RefreshFormationText()
     if SelectedFormationText then
         SelectedFormationText:SetText(PlayerbotManagerDB.selectedFormation)
     end
-end
-
-function PlayerbotManager_PrevClass()
-    local i = (PlayerbotManagerDB.selectedClassIndex or 1) - 1
-    if i < 1 then i = #classes end
-    PlayerbotManagerDB.selectedClassIndex = i
-    PlayerbotManagerDB.selectedClass = classes[i].name
-    RefreshClassText()
-end
-
-function PlayerbotManager_NextClass()
-    local i = (PlayerbotManagerDB.selectedClassIndex or 1) + 1
-    if i > #classes then i = 1 end
-    PlayerbotManagerDB.selectedClassIndex = i
-    PlayerbotManagerDB.selectedClass = classes[i].name
-    RefreshClassText()
 end
 
 function PlayerbotManager_PrevFormation()
@@ -164,6 +522,10 @@ end
 
 function PlayerbotManager_ShowTab(index)
     PlayerbotManagerDB.selectedTab = index
+    -- Resize the window to the active tab's content (tabs differ a lot in height).
+    if PlayerbotManagerFrame and tabHeights[index] then
+        PlayerbotManagerFrame:SetHeight(tabHeights[index])
+    end
     for i = 1, #contentFrames do
         if i == index then
             contentFrames[i]:Show()
@@ -179,41 +541,11 @@ end
 -- UI construction
 ------------------------------------------------------------------------
 
-local function BuildBotsTab(content)
-    local label = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    label:SetPoint("TOP", content, "TOP", 0, -8)
-    label:SetText("Add Class")
-
-    local prev = CreateButton(content, "<", 28, 26)
-    prev:SetPoint("TOP", content, "TOP", -75, -30)
-    prev:SetScript("OnClick", PlayerbotManager_PrevClass)
-
-    SelectedClassText = content:CreateFontString("SelectedClassText", "OVERLAY", "GameFontHighlightLarge")
-    SelectedClassText:SetPoint("TOP", content, "TOP", 0, -34)
-    SelectedClassText:SetWidth(110)
-
-    local next = CreateButton(content, ">", 28, 26)
-    next:SetPoint("TOP", content, "TOP", 75, -30)
-    next:SetScript("OnClick", PlayerbotManager_NextClass)
-
-    local add = CreateButton(content, "Add", 80, 26)
-    add:SetPoint("TOP", content, "TOP", 0, -64)
-    add:SetScript("OnClick", function()
-        PlayerbotManager_AddBot(PlayerbotManagerDB.selectedClass)
-    end)
-
-    local removeAll = CreateButton(content, "Remove All", 100, 26)
-    removeAll:SetPoint("TOP", content, "TOP", -55, -100)
-    removeAll:SetScript("OnClick", function()
-        SendChatMessage(".warstormbot bot remove *", "SAY")
-        LeaveParty()
-    end)
-
-    local respec = CreateButton(content, "ReSpec", 90, 26)
-    respec:SetPoint("TOP", content, "TOP", 55, -100)
-    respec:SetScript("OnClick", function()
-        SendChatMessage(".warstormbot bot init=epic", "SAY")
-    end)
+-- Sync the Team-tab checkbox with the stored setting (default on).
+function PlayerbotManager_RefreshAutoLevelCheck()
+    if autoLevelCheck then
+        autoLevelCheck:SetChecked(PlayerbotManagerDB.autoLevelUp ~= false)
+    end
 end
 
 local function BuildFormationTab(content)
@@ -244,6 +576,9 @@ local function BuildFormationTab(content)
     check:SetScript("OnClick", function()
         PlayerbotManager_SetCommand("formation")
     end)
+
+    -- +80 frame chrome; lowest widget (Set/Check bottom ~90) plus padding.
+    return 180
 end
 
 local function BuildControlsTab(content)
@@ -296,13 +631,262 @@ local function BuildControlsTab(content)
             end)
         end
     end
+
+    -- Frame height derived from the footer row (22 tall) so it tracks `roles`:
+    -- +80 frame chrome, footer bottom = |footerY| + 22, plus padding.
+    return 80 + math.abs(footerY) + 22 + 6
+end
+
+------------------------------------------------------------------------
+-- Team tab (live add + builder + saved-preset browser, merged)
+------------------------------------------------------------------------
+
+-- Builder state: 4 rows, classIndex 0 = empty slot, else index into `classes`.
+local builderRows = {}      -- builderRows[i] = { classIndex, specIndex, classFS, specFS }
+local presetIndex = 1       -- selected saved preset
+local presetSelFS           -- FontString showing the selected preset's name
+local presetNameEdit        -- name EditBox
+
+local function RowClassName(row)
+    if row.classIndex == 0 then return NONE_CLASS end
+    return classes[row.classIndex].name
+end
+
+local function RowSpecToken(row)
+    if row.classIndex == 0 then return nil end
+    local list = specs[classes[row.classIndex].name]
+    return list and list[row.specIndex] or nil
+end
+
+local function RefreshBuilderRow(i)
+    local row = builderRows[i]
+    row.classFS:SetText(RowClassName(row))
+    row.specFS:SetText(RowSpecToken(row) or "-")
+end
+
+-- The non-empty builder rows as a { class, spec } member list (the live "team").
+local function CollectBuilderMembers()
+    local members = {}
+    for i = 1, 4 do
+        local row = builderRows[i]
+        if row.classIndex ~= 0 then
+            table.insert(members, { class = RowClassName(row), spec = RowSpecToken(row) })
+        end
+    end
+    return members
+end
+
+local function CycleRowClass(i, dir)
+    local row = builderRows[i]
+    row.classIndex = row.classIndex + dir
+    if row.classIndex < 0 then row.classIndex = #classes
+    elseif row.classIndex > #classes then row.classIndex = 0 end
+    row.specIndex = 1
+    RefreshBuilderRow(i)
+end
+
+local function CycleRowSpec(i, dir)
+    local row = builderRows[i]
+    if row.classIndex == 0 then return end
+    local list = specs[classes[row.classIndex].name]
+    if not list or #list == 0 then return end
+    row.specIndex = row.specIndex + dir
+    if row.specIndex < 1 then row.specIndex = #list
+    elseif row.specIndex > #list then row.specIndex = 1 end
+    RefreshBuilderRow(i)
+end
+
+local function RefreshPresetSel()
+    if not presetSelFS then return end
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then
+        presetIndex = 1
+        presetSelFS:SetText("(no presets)")
+        return
+    end
+    if presetIndex < 1 then presetIndex = #presets end
+    if presetIndex > #presets then presetIndex = 1 end
+    presetSelFS:SetText(presets[presetIndex].name)
+end
+
+-- Refreshed from PlayerbotManager_Init once SavedVariables are loaded.
+function PlayerbotManager_RefreshPresetUI()
+    RefreshPresetSel()
+end
+
+local function SavePreset()
+    local name = presetNameEdit:GetText()
+    if not name or name == "" then
+        print("PlayerbotManager: enter a preset name first.")
+        return
+    end
+    local members = CollectBuilderMembers()
+    if #members == 0 then
+        print("PlayerbotManager: add at least one bot to the preset.")
+        return
+    end
+    PlayerbotManagerDB.presets = PlayerbotManagerDB.presets or {}
+    local replaced = false
+    for _, p in ipairs(PlayerbotManagerDB.presets) do
+        if p.name == name then p.members = members; replaced = true; break end
+    end
+    if not replaced then
+        table.insert(PlayerbotManagerDB.presets, { name = name, members = members })
+        presetIndex = #PlayerbotManagerDB.presets
+    end
+    RefreshPresetSel()
+    presetNameEdit:ClearFocus()   -- drop the cursor/focus once it's saved
+    print("PlayerbotManager: saved preset '" .. name .. "' (" .. #members .. " bots).")
+end
+
+local function ApplySelectedPreset()
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then
+        print("PlayerbotManager: no presets saved.")
+        return
+    end
+    PlayerbotManager_ApplyPreset(presets[presetIndex])
+end
+
+local function DeleteSelectedPreset()
+    local presets = PlayerbotManagerDB.presets
+    if not presets or #presets == 0 then return end
+    local removed = table.remove(presets, presetIndex)
+    print("PlayerbotManager: deleted preset '" .. removed.name .. "'.")
+    RefreshPresetSel()
+end
+
+local function BuildTeamTab(content)
+    local title = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", content, "TOP", 0, -4)
+    title:SetText("Build Team (up to 4 bots)")
+
+    -- 4 builder rows: [<] Class [>]   [<] Spec [>]
+    for i = 1, 4 do
+        local rowY = -24 - (i - 1) * 26
+        local row = { classIndex = 0, specIndex = 1 }
+
+        local cp = CreateButton(content, "<", 18, 18)
+        cp:SetPoint("TOPLEFT", content, "TOPLEFT", 2, rowY)
+        cp:SetScript("OnClick", function() CycleRowClass(i, -1) end)
+
+        row.classFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.classFS:SetPoint("TOPLEFT", content, "TOPLEFT", 22, rowY - 3)
+        row.classFS:SetWidth(74)
+        row.classFS:SetJustifyH("CENTER")
+
+        local cn = CreateButton(content, ">", 18, 18)
+        cn:SetPoint("TOPLEFT", content, "TOPLEFT", 98, rowY)
+        cn:SetScript("OnClick", function() CycleRowClass(i, 1) end)
+
+        local sp = CreateButton(content, "<", 18, 18)
+        sp:SetPoint("TOPLEFT", content, "TOPLEFT", 124, rowY)
+        sp:SetScript("OnClick", function() CycleRowSpec(i, -1) end)
+
+        row.specFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.specFS:SetPoint("TOPLEFT", content, "TOPLEFT", 144, rowY - 3)
+        row.specFS:SetWidth(96)
+        row.specFS:SetJustifyH("CENTER")
+
+        local sn = CreateButton(content, ">", 18, 18)
+        sn:SetPoint("TOPLEFT", content, "TOPLEFT", 242, rowY)
+        sn:SetScript("OnClick", function() CycleRowSpec(i, 1) end)
+
+        builderRows[i] = row
+        RefreshBuilderRow(i)
+    end
+
+    -- Live actions: add the configured rows to the CURRENT party, or clear it.
+    local add = CreateButton(content, "Add to Party", 120, 22)
+    add:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -126)
+    add:SetScript("OnClick", function()
+        PlayerbotManager_AddTeam(CollectBuilderMembers())
+    end)
+
+    local removeAll = CreateButton(content, "Remove All", 120, 22)
+    removeAll:SetPoint("TOPLEFT", content, "TOPLEFT", 128, -126)
+    removeAll:SetScript("OnClick", function()
+        SendChatMessage(".warstormbot bot remove *", "SAY")
+        LeaveParty()
+    end)
+
+    -- Save the configured rows as a named preset.
+    local nameLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -156)
+    nameLabel:SetText("Name:")
+
+    presetNameEdit = CreateFrame("EditBox", "PlayerbotManagerPresetNameEdit", content, "InputBoxTemplate")
+    presetNameEdit:SetPoint("TOPLEFT", content, "TOPLEFT", 44, -152)
+    presetNameEdit:SetWidth(130)
+    presetNameEdit:SetHeight(18)
+    presetNameEdit:SetAutoFocus(false)
+    presetNameEdit:SetMaxLetters(24)
+    presetNameEdit:SetFontObject(ChatFontNormal)
+    presetNameEdit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    presetNameEdit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    table.insert(skinEditBoxes, presetNameEdit)
+
+    local save = CreateButton(content, "Save", 64, 20)
+    save:SetPoint("TOPLEFT", content, "TOPLEFT", 180, -155)
+    save:SetScript("OnClick", SavePreset)
+
+    -- Saved presets: [<] Name [>]  then  Apply (full reset) / Delete / ReSpec
+    local savedLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    savedLabel:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -180)
+    savedLabel:SetText("Saved preset:")
+
+    local pp = CreateButton(content, "<", 18, 18)
+    pp:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -196)
+    pp:SetScript("OnClick", function() presetIndex = presetIndex - 1; RefreshPresetSel() end)
+
+    presetSelFS = content:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    presetSelFS:SetPoint("TOPLEFT", content, "TOPLEFT", 24, -199)
+    presetSelFS:SetWidth(150)
+    presetSelFS:SetJustifyH("CENTER")
+
+    local pn = CreateButton(content, ">", 18, 18)
+    pn:SetPoint("TOPLEFT", content, "TOPLEFT", 176, -196)
+    pn:SetScript("OnClick", function() presetIndex = presetIndex + 1; RefreshPresetSel() end)
+
+    local apply = CreateButton(content, "Apply", 70, 24)
+    apply:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -220)
+    apply:SetScript("OnClick", ApplySelectedPreset)
+
+    local del = CreateButton(content, "Delete", 66, 24)
+    del:SetPoint("TOPLEFT", content, "TOPLEFT", 78, -220)
+    del:SetScript("OnClick", DeleteSelectedPreset)
+
+    local respec = CreateButton(content, "ReSpec", 90, 24)
+    respec:SetPoint("TOPLEFT", content, "TOPLEFT", 150, -220)
+    respec:SetScript("OnClick", PlayerbotManager_ReinitBots)
+
+    -- Toggle: re-init bots (init=epic + re-spec + autogear) automatically on level up.
+    autoLevelCheck = CreateFrame("CheckButton", "PlayerbotManagerAutoLevelCheck", content, "UICheckButtonTemplate")
+    autoLevelCheck:SetWidth(24)
+    autoLevelCheck:SetHeight(24)
+    autoLevelCheck:SetPoint("TOPLEFT", content, "TOPLEFT", 2, -250)
+    local chkLabel = _G["PlayerbotManagerAutoLevelCheckText"]
+    if chkLabel then
+        chkLabel:SetFontObject(GameFontNormalSmall)
+        chkLabel:SetText("Re-init bots on level up")
+    end
+    autoLevelCheck:SetScript("OnClick", function(self)
+        PlayerbotManagerDB.autoLevelUp = self:GetChecked() and true or false
+    end)
+    table.insert(skinChecks, autoLevelCheck)
+
+    RefreshPresetSel()
+
+    -- Window height: content starts at frame -68, bottom margin 12 (so +80), plus
+    -- the lowest widget here (checkbox bottom ~274) and a little padding.
+    return 360
 end
 
 local function BuildUI()
     -- Main window
     local f = CreateFrame("Frame", "PlayerbotManagerFrame", UIParent)
-    f:SetWidth(290)
-    f:SetHeight(280)
+    f:SetWidth(300)
+    f:SetHeight(360)   -- placeholder; ShowTab resizes to the active tab on first show
     f:SetPoint("TOP", UIParent, "TOP", 0, -120)
     f:SetToplevel(true)
     f:EnableMouse(true)
@@ -327,12 +911,12 @@ local function BuildUI()
     closeButton:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
     closeButton:SetScript("OnClick", function() f:Hide() end)
 
-    -- Tabs
-    local tabLabels = { "Bots", "Formation", "Controls" }
-    local tabW = 86
+    -- Tabs (3 across; the Team tab merges the old Bots + Presets tabs)
+    local tabLabels = { "Team", "Form", "Ctrl" }
+    local tabW = 88
     for i, name in ipairs(tabLabels) do
         local tab = CreateButton(f, name, tabW, 22)
-        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 12 + (i - 1) * (tabW + 2), -40)
+        tab:SetPoint("TOPLEFT", f, "TOPLEFT", 11 + (i - 1) * (tabW + 1), -40)
         tab:SetScript("OnClick", function() PlayerbotManager_ShowTab(i) end)
         tabButtons[i] = tab
 
@@ -343,15 +927,27 @@ local function BuildUI()
         contentFrames[i] = content
     end
 
-    BuildBotsTab(contentFrames[1])
-    BuildFormationTab(contentFrames[2])
-    BuildControlsTab(contentFrames[3])
+    tabHeights[1] = BuildTeamTab(contentFrames[1])
+    tabHeights[2] = BuildFormationTab(contentFrames[2])
+    tabHeights[3] = BuildControlsTab(contentFrames[3])
 
-    -- Event handling: init + skin once everything (incl. ElvUI) has loaded
+    -- Event handling: init + skin on login; re-init bots on level up; run a
+    -- combat-deferred re-init when combat ends.
     f:RegisterEvent("PLAYER_LOGIN")
-    f:SetScript("OnEvent", function()
-        PlayerbotManager_Init()
-        PlayerbotManager_SkinElvUI()
+    f:RegisterEvent("PLAYER_LEVEL_UP")
+    f:RegisterEvent("PLAYER_REGEN_ENABLED")
+    f:SetScript("OnEvent", function(self, event)
+        if event == "PLAYER_LEVEL_UP" then
+            PlayerbotManager_OnLevelUp()
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            if reinitPending then
+                reinitPending = false
+                PlayerbotManager_ReinitBots()
+            end
+        else  -- PLAYER_LOGIN
+            PlayerbotManager_Init()
+            PlayerbotManager_SkinElvUI()
+        end
     end)
 end
 
@@ -435,16 +1031,7 @@ end
 ------------------------------------------------------------------------
 
 function PlayerbotManager_Init()
-    -- Class selection: derive index from the saved name so the two can't drift.
-    PlayerbotManagerDB.selectedClass = PlayerbotManagerDB.selectedClass or "Druid"
-    PlayerbotManagerDB.selectedClassIndex = IndexByName(classes, PlayerbotManagerDB.selectedClass)
-    if not PlayerbotManagerDB.selectedClassIndex then
-        PlayerbotManagerDB.selectedClassIndex = 1
-        PlayerbotManagerDB.selectedClass = classes[1].name
-    end
-    RefreshClassText()
-
-    -- Formation selection (same name-derived index)
+    -- Formation selection: derive index from the saved name so the two can't drift.
     PlayerbotManagerDB.selectedFormation = PlayerbotManagerDB.selectedFormation or "Shield"
     PlayerbotManagerDB.selectedFormationIndex = IndexByName(formations, PlayerbotManagerDB.selectedFormation)
     if not PlayerbotManagerDB.selectedFormationIndex then
@@ -457,8 +1044,19 @@ function PlayerbotManager_Init()
     PlayerbotManagerDB.buttonPos = nil   -- drop the old, broken x/y format
     PlayerbotManager_PositionButton()
 
-    -- Open on the last-used tab
-    PlayerbotManager_ShowTab(PlayerbotManagerDB.selectedTab or 1)
+    -- Auto re-init bots on level up: default ON (post to party when grouped)
+    if PlayerbotManagerDB.autoLevelUp == nil then
+        PlayerbotManagerDB.autoLevelUp = true
+    end
+    PlayerbotManager_RefreshAutoLevelCheck()
+
+    -- Populate the saved-preset selector now that SavedVariables are loaded
+    PlayerbotManager_RefreshPresetUI()
+
+    -- Open on the last-used tab (clamp: the old 4-tab layout could have saved 4)
+    local tab = PlayerbotManagerDB.selectedTab or 1
+    if tab < 1 or tab > #contentFrames then tab = 1 end
+    PlayerbotManager_ShowTab(tab)
 end
 
 function PlayerbotManager_SkinElvUI()
@@ -476,10 +1074,59 @@ function PlayerbotManager_SkinElvUI()
         for _, b in ipairs(skinButtons) do
             S:HandleButton(b)
         end
+        if S.HandleEditBox then
+            for _, e in ipairs(skinEditBoxes) do
+                S:HandleEditBox(e)
+            end
+        end
+        if S.HandleCheckBox then
+            for _, c in ipairs(skinChecks) do
+                S:HandleCheckBox(c)
+            end
+        end
         if closeButton then
             S:HandleCloseButton(closeButton, f.backdrop)
         end
     end)
+end
+
+------------------------------------------------------------------------
+-- Slash command: /wbm (panel toggle, reinit, loot, level-up toggle)
+------------------------------------------------------------------------
+
+SLASH_WARSTORMBOTMANAGER1 = "/wbm"
+SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
+    msg = string.lower(msg or "")
+    msg = string.gsub(msg, "^%s+", "")
+    msg = string.gsub(msg, "%s+$", "")
+
+    if msg == "" then
+        PlayerbotManagerButtonFrame_OnClick()        -- toggle the panel
+    elseif msg == "reinit" then
+        PlayerbotManager_ReinitBots()                -- manual re-init now
+    elseif msg == "loot" then
+        PlayerbotManager_SetGroupLoot()              -- Free For All + Epic threshold
+    elseif msg == "levelup" then
+        PlayerbotManagerDB.autoLevelUp = not PlayerbotManagerDB.autoLevelUp
+        PlayerbotManager_RefreshAutoLevelCheck()
+        print("PlayerbotManager: auto re-init on level up " ..
+            (PlayerbotManagerDB.autoLevelUp and "ENABLED" or "DISABLED") .. ".")
+    elseif msg == "levelup on" then
+        PlayerbotManagerDB.autoLevelUp = true
+        PlayerbotManager_RefreshAutoLevelCheck()
+        print("PlayerbotManager: auto re-init on level up ENABLED.")
+    elseif msg == "levelup off" then
+        PlayerbotManagerDB.autoLevelUp = false
+        PlayerbotManager_RefreshAutoLevelCheck()
+        print("PlayerbotManager: auto re-init on level up DISABLED.")
+    else
+        print("PlayerbotManager commands:")
+        print("  /wbm  -  toggle the bot manager panel")
+        print("  /wbm reinit  -  re-init the current bots now (init=epic + re-spec + autogear)")
+        print("  /wbm loot  -  set the group to Free For All / Epic threshold")
+        print("  /wbm levelup [on|off]  -  auto re-init bots on level up (currently " ..
+            (PlayerbotManagerDB.autoLevelUp ~= false and "on" or "off") .. ")")
+    end
 end
 
 -- Build the UI at load time; Init/skin run on PLAYER_LOGIN.
