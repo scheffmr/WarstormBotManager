@@ -132,6 +132,178 @@ function PlayerbotManager_SetCommand(command)
 end
 
 ------------------------------------------------------------------------
+-- Trade payout
+--
+-- Warstorm bots buy green-or-better items you trade them, paying ~3x the
+-- items' vendor value. As soon as you place/change items in the trade window,
+-- this whispers the partner the payout: 3 x the summed vendor sell value of the
+-- uncommon+ items you're offering, excluding locked / unlockable containers
+-- (lockboxes, junkboxes). It fires on item change rather than on accept because
+-- the bot often accepts the trade before you do.
+--
+-- 3.3.5a's GetItemInfo returns no sell price (that was added in 4.0.1), so the
+-- value is read by scanning a hidden tooltip's money frame for each offered
+-- item -- the same way the merchant "Sell Price" line is rendered. Verify the
+-- numbers in game with `/wbm tradevalue` before relying on it.
+------------------------------------------------------------------------
+
+local TRADE_SLOTS = 6   -- slots 1..6 are tradeable; slot 7 is the no-trade slot
+
+-- Lazily-built hidden tooltip used to read item sell price / locked status.
+local tradeScanTip
+local function EnsureScanTip()
+    if not tradeScanTip then
+        tradeScanTip = CreateFrame("GameTooltip", "PlayerbotManagerTradeScanTip",
+            UIParent, "GameTooltipTemplate")
+    end
+    return tradeScanTip
+end
+
+-- Read the (stack) vendor sell value from the scan tooltip's money frame.
+-- Returns copper, or 0 when the tooltip shows no money line.
+local function ScanTipSellValue()
+    local mf = _G["PlayerbotManagerTradeScanTipMoneyFrame1"]
+    if not mf or not mf:IsShown() then return 0 end
+    local function part(suffix)
+        local b = _G["PlayerbotManagerTradeScanTipMoneyFrame1" .. suffix]
+        return tonumber(b and b:GetText()) or 0
+    end
+    return part("GoldButton") * 10000 + part("SilverButton") * 100 + part("CopperButton")
+end
+
+-- True if the scan tooltip shows a "Locked" line (lockbox / unlockable container).
+local function ScanTipLocked()
+    for i = 1, (tradeScanTip:NumLines() or 0) do
+        local fs = _G["PlayerbotManagerTradeScanTipTextLeft" .. i]
+        local txt = fs and fs:GetText()
+        if txt and string.find(txt, LOCKED, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Format copper as "<g>g<s>s<c>c" (no spaces), omitting zero components (each
+-- present component keeps its g/s/c suffix). Returns nil for a non-positive amount.
+local function FormatPayout(copper)
+    if not copper or copper <= 0 then return nil end
+    local g = math.floor(copper / 10000)
+    local s = math.floor((copper % 10000) / 100)
+    local c = copper % 100
+    local msg = ""
+    if g > 0 then msg = msg .. g .. "g" end
+    if s > 0 then msg = msg .. s .. "s" end
+    if c > 0 then msg = msg .. c .. "c" end
+    return msg
+end
+
+-- Sum the vendor sell value of the uncommon-or-better, non-locked items the
+-- player is currently offering in the open trade. Returns (copper, itemCount,
+-- pending) -- `pending` is true when an offered item's data isn't cached yet
+-- (GetItemInfo nil), so the caller can retry once it loads.
+local function ComputeOfferedVendorValue()
+    local tip = EnsureScanTip()
+    local total, count, pending = 0, 0, false
+    for i = 1, TRADE_SLOTS do
+        local link = GetTradePlayerItemLink(i)
+        if link then
+            local _, _, quality = GetItemInfo(link)
+            if not quality then
+                pending = true   -- item not cached yet; value would be wrong now
+            elseif quality >= 2 then   -- 2 = uncommon (green) or better
+                -- ClearLines() doesn't hide the money frame, so a previous
+                -- item's sell price can linger -- hide it so a no-sell-price
+                -- item reads as 0 instead of the last item's value.
+                local stale = _G["PlayerbotManagerTradeScanTipMoneyFrame1"]
+                if stale then stale:Hide() end
+                tip:SetOwner(UIParent, "ANCHOR_NONE")
+                tip:ClearLines()
+                tip:SetTradePlayerItem(i)
+                if not ScanTipLocked() then
+                    local v = ScanTipSellValue()
+                    if v > 0 then
+                        total = total + v
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+    return total, count, pending
+end
+
+-- Name of the current trade partner (unit "NPC" during a trade), or nil.
+local function TradePartnerName()
+    local n = UnitName("NPC")
+    if n and n ~= "" and n ~= UNKNOWN then return n end
+    if TradeFrameRecipientNameText then
+        local t = TradeFrameRecipientNameText:GetText()
+        if t and t ~= "" then return t end
+    end
+    return nil
+end
+
+-- Whisper-state: collapse a burst of item-change events into one whisper, and
+-- don't re-whisper an amount that hasn't changed within the same trade session.
+local tradeDebounceToken
+local lastTradePayoutMsg
+
+-- Compute the current offer's payout and whisper it to the partner. No-op when
+-- the toggle is off, there's no partner, nothing qualifying is on offer, or the
+-- amount is unchanged since the last whisper this trade. When the offer has no
+-- payout (empty/removed), it forgets the last amount so re-adding the same item
+-- whispers again.
+function PlayerbotManager_WhisperTradePayout()
+    if PlayerbotManagerDB.tradeWhisper == false then return end
+    local partner = TradePartnerName()
+    if not partner then return end
+    local total, count = ComputeOfferedVendorValue()
+    local msg = FormatPayout(total * 3)
+    if not msg then
+        lastTradePayoutMsg = nil   -- offer empty: let a re-add re-whisper
+        return
+    end
+    if msg == lastTradePayoutMsg then return end
+    lastTradePayoutMsg = msg
+    SendChatMessage(msg, "WHISPER", nil, partner)
+    print("PlayerbotManager: trade payout -> " .. partner .. ": " .. msg ..
+        " (3x vendor of " .. count .. " item(s)).")
+end
+
+-- Debounce: TRADE_PLAYER_ITEM_CHANGED fires once per slot, so wait for the burst
+-- to settle before whispering. If an item's data isn't cached yet, retry a few
+-- times (~0.4s apart) so the whisper isn't skipped while it loads.
+local function ScheduleTradeWhisper(attempt)
+    attempt = attempt or 1
+    local token = {}
+    tradeDebounceToken = token
+    PlayerbotManager_After(0.4, function()
+        if tradeDebounceToken ~= token then return end   -- superseded by a newer change
+        local _, _, pending = ComputeOfferedVendorValue()
+        if pending and attempt < 5 then
+            ScheduleTradeWhisper(attempt + 1)
+        else
+            PlayerbotManager_WhisperTradePayout()
+        end
+    end)
+end
+
+-- Whisper the payout as soon as items are placed/changed in the trade window
+-- (the bot can accept before you do, so accept-time is too late). TRADE_SHOW /
+-- TRADE_CLOSED start a fresh session so the next trade re-whispers.
+local tradeFrame = CreateFrame("Frame")
+tradeFrame:RegisterEvent("TRADE_SHOW")
+tradeFrame:RegisterEvent("TRADE_CLOSED")
+tradeFrame:RegisterEvent("TRADE_PLAYER_ITEM_CHANGED")
+tradeFrame:SetScript("OnEvent", function(self, event)
+    if event == "TRADE_PLAYER_ITEM_CHANGED" then
+        ScheduleTradeWhisper()
+    else
+        lastTradePayoutMsg = nil
+    end
+end)
+
+------------------------------------------------------------------------
 -- Lightweight OnUpdate scheduler (3.3.5a has no guaranteed C_Timer). Used to
 -- space out the preset-apply chat commands.
 ------------------------------------------------------------------------
@@ -1050,6 +1222,11 @@ function PlayerbotManager_Init()
     end
     PlayerbotManager_RefreshAutoLevelCheck()
 
+    -- Whisper the bot its payout when you trade it items: default ON.
+    if PlayerbotManagerDB.tradeWhisper == nil then
+        PlayerbotManagerDB.tradeWhisper = true
+    end
+
     -- Populate the saved-preset selector now that SavedVariables are loaded
     PlayerbotManager_RefreshPresetUI()
 
@@ -1119,6 +1296,25 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
         PlayerbotManagerDB.autoLevelUp = false
         PlayerbotManager_RefreshAutoLevelCheck()
         print("PlayerbotManager: auto re-init on level up DISABLED.")
+    elseif msg == "tradewhisper" or msg == "tradewhisper on" or msg == "tradewhisper off" then
+        if msg == "tradewhisper on" then
+            PlayerbotManagerDB.tradeWhisper = true
+        elseif msg == "tradewhisper off" then
+            PlayerbotManagerDB.tradeWhisper = false
+        else
+            PlayerbotManagerDB.tradeWhisper = (PlayerbotManagerDB.tradeWhisper == false)
+        end
+        print("PlayerbotManager: trade payout whisper " ..
+            (PlayerbotManagerDB.tradeWhisper ~= false and "ENABLED" or "DISABLED") .. ".")
+    elseif msg == "tradevalue" then
+        local total, count = ComputeOfferedVendorValue()
+        if count == 0 then
+            print("PlayerbotManager: no green+ tradeable items found (open a trade and place items first).")
+        else
+            print("PlayerbotManager: " .. count .. " item(s), vendor " ..
+                (FormatPayout(total) or "0c") .. ", 3x payout = " ..
+                (FormatPayout(total * 3) or "0c") .. ".")
+        end
     else
         print("PlayerbotManager commands:")
         print("  /wbm  -  toggle the bot manager panel")
@@ -1126,6 +1322,9 @@ SlashCmdList["WARSTORMBOTMANAGER"] = function(msg)
         print("  /wbm loot  -  set the group to Free For All / Epic threshold")
         print("  /wbm levelup [on|off]  -  auto re-init bots on level up (currently " ..
             (PlayerbotManagerDB.autoLevelUp ~= false and "on" or "off") .. ")")
+        print("  /wbm tradewhisper [on|off]  -  whisper the bot its payout when you trade it items (currently " ..
+            (PlayerbotManagerDB.tradeWhisper ~= false and "on" or "off") .. ")")
+        print("  /wbm tradevalue  -  print the 3x payout for items in the open trade (no whisper)")
     end
 end
 
