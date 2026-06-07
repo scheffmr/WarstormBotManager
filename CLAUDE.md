@@ -36,6 +36,12 @@ Applying a preset (or Add to Party) records `PlayerbotManagerDB.lastApplied` (a 
 
 The per-class talent-spec tokens live in the `specs` table (e.g. `specs.Paladin = { "prot pve", ... }`). These are **Warstorm-specific**; the whisper sent is `"talents spec " .. token`. **DK tokens are placeholders** (`-- TODO: verify`) until a high-level DK can query them in game.
 
+### Trade payout (whisper the bot its price)
+
+Warstorm bots buy green-or-better items you trade them, paying ~3× the items' vendor value. The "Trade payout" section in `WarstormBotManager.lua` whispers the trade partner that payout the moment you place/change items in the trade window. It listens on `TRADE_PLAYER_ITEM_CHANGED` (it fires on item change rather than on `AcceptTrade`, because the bot often accepts the trade before you do), debounced via `ScheduleTradeWhisper` (~0.4s, with a retry while `GetItemInfo` is still uncached) and de-duped against `lastTradePayoutMsg` (reset on `TRADE_SHOW`/`TRADE_CLOSED`). `ComputeOfferedVendorValue` sums the vendor sell value of slots 1–6 for items of **quality ≥ 2** (green+), skipping any whose tooltip shows the `LOCKED` line (lockboxes / unlockable containers). **3.3.5a's `GetItemInfo` has no `sellPrice`** (added in 4.0.1), so value is read by scanning a hidden tooltip (`SetTradePlayerItem`) and reading its money frame (`ScanTipSellValue`); the money frame is hidden before each scan so a prior item's price can't linger. The whisper format is `"<g>g<s>s<c>c"` (no spaces, zero components omitted — `FormatPayout`). Gated by `PlayerbotManagerDB.tradeWhisper` (**default on**, seeded in `Init`), toggled by `/wbm tradewhisper [on|off]`; `/wbm tradevalue` prints the computed payout for the open trade without whispering.
+
+**TODO:** the trade-payout toggle is slash-only — add a UI toggle (a checkbox like `autoLevelCheck`, collected in `skinChecks`, kept in sync by a `Refresh*` helper) and, while doing so, tidy up the Team-tab layout for it (the tab is already full at ~360px height, so this likely needs a small re-layout or a new home for trade-related settings). Not yet built.
+
 ### Scheduling (no C_Timer on 3.3.5a)
 
 `PlayerbotManager_After(delay, fn)` is a self-contained scheduler: a single hidden frame with an `OnUpdate` that fires queued callbacks when their `GetTime()` target elapses. The preset apply uses it to space out chat commands (bots need time to spawn/join). **Do not** reach for `C_Timer` — it is not guaranteed on this client.
