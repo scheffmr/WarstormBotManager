@@ -1,5 +1,8 @@
 # Warstorm Bot Manager
 
+> ⚠️ **Archived.** This project has moved into [**OptimalRaidComp (ORC)**](https://github.com/scheffmr/OptimalRaidComp)
+> and is no longer maintained here. Please use that repository for the latest version, issues, and updates.
+
 A lightweight World of Warcraft **3.3.5a (WotLK)** addon for controlling the
 server-side **playerbots** on the [Warstorm.org](https://warstorm.org) private server.
 
